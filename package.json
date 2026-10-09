@@ -1,0 +1,13 @@
+{
+  "name": "coursepilot",
+  "version": "0.2.6",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node scripts/check.mjs",
+    "package": "node scripts/package.mjs",
+    "debug:browser": "node scripts/debug-browser-server.mjs"
+  },
+  "engines": { "node": ">=22" }
+}

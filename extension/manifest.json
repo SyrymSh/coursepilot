@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "CoursePilot — 50 часов / 25 дней",
+  "version": "0.2.6",
+  "description": "Параллельные планы Coursera: общий бюджет предмета, реальные часы активности и необязательный ИИ.",
+  "minimum_chrome_version": "120",
+  "permissions": ["storage", "alarms", "sidePanel"],
+  "host_permissions": ["https://www.coursera.org/*", "https://coursera.org/*", "https://d10o6em2qtnr4q.cloudfront.net/assets/d96617fd0cc347daaf2a8420f66905f1/tmp/S30P001-security-analysts-en/index.html"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "Открыть CoursePilot" },
+  "side_panel": { "default_path": "dashboard.html" },
+  "options_page": "dashboard.html",
+  "content_scripts": [{
+    "matches": ["https://www.coursera.org/*", "https://coursera.org/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }, {
+    "matches": ["https://d10o6em2qtnr4q.cloudfront.net/assets/d96617fd0cc347daaf2a8420f66905f1/tmp/S30P001-security-analysts-en/index.html"],
+    "js": ["widget.js"],
+    "all_frames": true,
+    "run_at": "document_idle"
+  }],
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'" }
+}

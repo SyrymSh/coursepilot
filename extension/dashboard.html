@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>CoursePilot — мой маршрут</title>
+    <link rel="stylesheet" href="dashboard.css">
+    <script type="module" src="dashboard.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="dashboard.html" aria-label="CoursePilot — главная">
+          <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="m7 25 7-18h11l-7 18H7Z"/><path d="m7 25 18-18"/></svg></span>
+          <span>course<span class="brand-light">pilot</span><span class="brand-label">ЛИЧНЫЙ МАРШРУТ</span></span>
+        </a>
+        <div class="topbar-actions">
+          <span class="local-label"><span class="status-dot"></span>В этом Chrome</span>
+          <button class="icon-button" id="settings-open" type="button" aria-label="Открыть настройки" title="Настройки"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16M9 4v6m6 4v6"/></svg></button>
+        </div>
+      </header>
+
+      <main>
+        <section class="page-heading">
+          <div><p class="eyebrow">ПАРАЛЛЕЛЬНО. ПО РАСПИСАНИЮ.</p><h1>Всё идёт по плану.</h1><p class="subheading">Один предмет. 50 часов. 25 дней.</p></div>
+          <button class="button button-dark" id="add-open" type="button"><span aria-hidden="true">＋</span> Добавить предмет</button>
+        </section>
+
+        <div id="connection-error" class="message message-error" role="alert" hidden></div>
+
+        <section class="overview" aria-label="Общий прогресс">
+          <div class="overview-main"><p class="eyebrow">ОБЩЕЕ ВРЕМЯ ПО ПРЕДМЕТАМ</p><div class="overview-number"><span id="total-hours">0</span><span class="overview-unit">ч</span><span class="overview-budget" id="total-budget">из 0 ч</span></div><div class="overview-progress" aria-hidden="true"><span id="total-progress"></span></div><p class="overview-caption" id="total-caption">Добавь первый предмет, чтобы собрать свой маршрут.</p></div>
+          <div class="overview-side"><div class="stat"><span class="stat-label">В работе</span><strong id="active-count">0 <small>/ 4</small></strong></div><div class="stat"><span class="stat-label">Сегодня</span><strong id="today-hours">0 <small>ч</small></strong></div><div class="overview-schedule"><span class="status-dot"></span><span id="schedule-label">09:00–21:00</span></div></div>
+        </section>
+
+        <p class="application-window" id="application-window"></p>
+
+        <section class="subjects-section" aria-labelledby="subjects-heading">
+          <div class="section-heading"><div class="section-title"><h2 id="subjects-heading">Мои предметы</h2><span class="count-tag" id="subject-count">0</span></div><button class="text-button" id="refresh" type="button">Обновить <span aria-hidden="true">↻</span></button></div>
+          <div id="subjects" class="subjects-grid"></div>
+          <div id="empty-state" class="empty-state"><div class="empty-symbol" aria-hidden="true">↗</div><h3>Начни с одного предмета</h3><p>Выбери программу ниже или вставь свою ссылку.<br>Курсы внутри программы разделят общий бюджет 50 часов.</p><button class="button button-outline" id="empty-add" type="button">Вставить ссылку</button></div>
+        </section>
+
+        <section class="catalog-section" aria-labelledby="catalog-heading">
+          <div class="section-heading"><div><p class="eyebrow">ГОТОВЫЕ МАРШРУТЫ</p><h2 id="catalog-heading">Твои выбранные программы</h2></div><span class="muted small catalog-count">4 программы</span></div>
+          <div class="catalog-grid" id="catalog"></div>
+        </section>
+
+        <details class="activity-panel" id="activity-panel"><summary><span>Журнал действий</span><span id="log-count" class="count-tag">0</span><span class="summary-chevron" aria-hidden="true">⌄</span></summary><div id="logs" class="logs"></div></details>
+
+        <footer class="page-footer"><div><span class="footer-mark" aria-hidden="true">↗</span><p>Chrome должен быть открыт, компьютер — включён.<br><span class="muted">50 часов — бюджет времени. Завершение заданий и сертификаты учитываются отдельно.</span><br><span class="muted" id="extension-version"></span></p></div><button class="text-button" id="export" type="button">Экспорт данных <span aria-hidden="true">↓</span></button></footer>
+      </main>
+    </div>
+
+    <dialog id="add-dialog" aria-labelledby="add-title">
+      <form id="add-form">
+        <div class="dialog-heading"><div><p class="eyebrow">НОВЫЙ МАРШРУТ</p><h2 id="add-title">Добавить предмет</h2></div><button class="icon-button" type="button" data-close="add-dialog" aria-label="Закрыть">×</button></div>
+        <p class="dialog-description">Вставь ссылку на программу или отдельный курс Coursera. Несколько курсов можно объединить в одном предмете.</p>
+        <label class="field">Название предмета<input id="subject-title" name="title" required maxlength="160" placeholder="Например, Software Architecture" autocomplete="off"></label>
+        <label class="field">Ссылка Coursera<input id="subject-url" name="url" required type="url" placeholder="https://www.coursera.org/…" autocomplete="off"></label>
+        <div class="plan-strip"><strong>50 часов</strong><span>общий бюджет</span><span class="plan-divider"></span><strong>25 дней</strong><span>на предмет</span></div>
+        <p class="field-hint">Дата начала появится с первой учитываемой активностью. Курсы разных предметов могут работать параллельно.</p>
+        <p class="form-error" id="add-error" role="alert" hidden></p>
+        <div class="dialog-footer"><button class="button button-outline" data-close="add-dialog" type="button">Отмена</button><button class="button button-dark" type="submit">Добавить предмет <span aria-hidden="true">↗</span></button></div>
+      </form>
+    </dialog>
+
+    <dialog id="course-dialog" aria-labelledby="course-title">
+      <form id="course-form"><input type="hidden" id="course-subject-id">
+        <div class="dialog-heading"><div><p class="eyebrow">ВНУТРИ ПРЕДМЕТА</p><h2 id="course-title">Добавить курс</h2></div><button class="icon-button" type="button" data-close="course-dialog" aria-label="Закрыть">×</button></div>
+        <p class="dialog-description">Если курс не появился после сканирования, добавь прямую ссылку на него. Бюджет предмета останется общим.</p>
+        <label class="field">Название курса<input id="course-name" required maxlength="160" autocomplete="off"></label>
+        <label class="field">Ссылка на курс<input id="course-url" type="url" required placeholder="https://www.coursera.org/learn/…" autocomplete="off"></label>
+        <p class="form-error" id="course-error" role="alert" hidden></p>
+        <div class="dialog-footer"><button class="button button-outline" data-close="course-dialog" type="button">Отмена</button><button class="button button-dark" type="submit">Добавить курс</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+      <form id="settings-form">
+        <div class="dialog-heading"><div><p class="eyebrow">ПОД ТВОЙ РИТМ</p><h2 id="settings-title">Настройки</h2></div><button class="icon-button" type="button" data-close="settings-dialog" aria-label="Закрыть">×</button></div>
+        <fieldset><legend>Расписание</legend><div class="field-grid"><label class="field">Начало дня<input id="window-start" type="time" required></label><label class="field">Конец дня<input id="window-end" type="time" required></label></div><label class="field">Часовой пояс<input id="timezone" required placeholder="Asia/Qyzylorda" autocomplete="off"></label><label class="field">Одновременно работающих предметов<select id="max-parallel"><option value="1">1 предмет</option><option value="2">2 предмета</option><option value="3">3 предмета</option><option value="4">4 предмета</option></select></label><p class="field-hint">Пропущенная нагрузка распределяется на оставшиеся дни. Пауза одного предмета не останавливает остальные.</p></fieldset>
+        <fieldset><legend>Подача на перезачёт</legend><div class="field-grid"><label class="field">Начало подачи<input id="application-start" type="date"></label><label class="field">Последний день<input id="application-end" type="date"></label></div><p class="field-hint">Предварительные даты из объявления: 2–9 ноября 2026 года. Их можно изменить или убрать. Решение о перезачёте принимает комиссия.</p></fieldset>
+        <fieldset class="ai-settings">
+          <legend>ИИ по необходимости</legend>
+          <label class="toggle-row"><span><strong>Подключить ИИ</strong><small>Свой сервис и свой ключ API</small></span><input id="ai-enabled" type="checkbox" role="switch"><span class="toggle-track" aria-hidden="true"></span></label>
+          <div id="ai-fields">
+            <label class="field">Адрес API<input id="ai-endpoint" type="url" placeholder="https://…/v1/chat/completions" autocomplete="off"></label>
+            <p class="field-hint">OpenAI-совместимый chat/completions endpoint. Для локального сервиса разрешён HTTP на localhost.</p>
+            <label class="field">Модель<input id="ai-model" maxlength="150" placeholder="Название модели у провайдера" autocomplete="off"></label>
+            <label class="field">Ключ API<span class="field-tag" id="key-status">Не сохранён</span><input id="ai-key" type="password" placeholder="Пустое поле сохраняет текущий ключ" autocomplete="new-password" spellcheck="false"></label>
+            <label class="checkbox-row"><input id="clear-key" type="checkbox">Удалить сохранённый ключ</label>
+            <div class="field-grid"><label class="field">Запросов в день<input id="ai-requests" type="number" min="1" max="500" required></label><label class="field">Токенов на ответ<input id="ai-tokens" type="number" min="128" max="4096" required></label></div>
+            <label class="checkbox-row"><input id="ai-auto-submit" type="checkbox" aria-describedby="auto-submit-hint"><span>Автоматически отправлять поддерживаемые тесты</span></label>
+            <p class="field-hint" id="auto-submit-hint">Одна отправка на попытку; переход дальше — только после явного успешного результата Coursera. Для распознанного Honor Code есть отдельная настройка ниже; остальные подтверждения остаются ручными.</p>
+            <label class="checkbox-row"><input id="ai-auto-honor-code" type="checkbox" aria-describedby="auto-honor-code-hint"><span>Автоматически отмечать галочку Coursera Honor Code</span></label>
+            <p class="field-hint" id="auto-honor-code-hint">По умолчанию выключено. При включённой автоотправке отмечает только распознанное «I, …, understand and agree» в блоке Honor Code. Это подтверждение от вашего имени: отправляемая работа является вашей. Неизвестный или изменённый текст, другие соглашения и проверка личности остаются ручными.</p>
+            <label class="checkbox-row"><input id="ai-auto-dialogue" type="checkbox" aria-describedby="auto-dialogue-hint"><span>Автоматически отвечать в поддерживаемом Coursera Coach</span></label>
+            <label class="field">Сообщений ИИ на диалог Coach<input id="ai-dialogue-turns" type="number" min="1" max="30" step="1" value="12" required aria-describedby="auto-dialogue-hint"></label>
+            <p class="field-hint" id="auto-dialogue-hint">Отдельная опция, по умолчанию выключена. Текущий вопрос и до 6 последних пар «вопрос — ответ» передаются выбранному API-провайдеру; размер ограничен. Черновик не заменяется. Неизвестная форма, подтверждение или достигнутый лимит останавливают диалог; кодекс чести и проверка личности требуют ручного действия.</p>
+            <p class="field-hint">Без ИИ продолжаются расписание, видео и навигация. Задания, которым нужен ИИ или отдельный обработчик, ждут действия.</p>
+          </div>
+          <div class="ai-usage"><span id="ai-usage">Сегодня: 0 запросов · 0 токенов</span><button class="text-button" id="reset-ai" type="button">Очистить кэш ответов</button></div>
+        </fieldset>
+        <p class="form-error" id="settings-error" role="alert" hidden></p>
+        <div class="dialog-footer"><button class="button button-outline" data-close="settings-dialog" type="button">Отмена</button><button class="button button-dark" type="submit">Сохранить настройки</button></div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CoursePilot isolated diagnostics</title>
+  <style>
+    body{font:16px/1.5 system-ui;max-width:1000px;margin:24px auto;padding:0 20px 100px;color:#172338;background:#fafbf9}
+    h1{font-size:24px}h2{font-size:18px}label{display:block;padding:12px}button,a{font:inherit}button{padding:7px 11px;cursor:pointer;border:1px solid #86998b;border-radius:6px;background:#fff}
+    button:disabled{cursor:default;opacity:.5}button:focus-visible,a:focus-visible{outline:3px solid #2268cb;outline-offset:3px}
+    .controls,nav{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}nav a{padding:4px 8px;background:#e5eee9;border-radius:5px}main{padding:18px;border:1px solid #cbd7ce;border-radius:8px;background:white}
+    pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eef2ed;padding:16px;font-size:13px}[hidden]{display:none!important}
+    #assignment-modal{position:fixed;inset:20px 380px 20px 20px;overflow:auto;padding:24px;border:2px solid #668078;border-radius:12px;background:#fff;z-index:10;box-shadow:0 0 0 999px #17233830}
+    textarea{box-sizing:border-box;width:100%;min-height:110px;font:inherit;padding:10px}#coach-messages>div{padding:12px;margin:8px 0;background:#eef3f8;border-radius:6px}#coach-messages>[data-testid="chat-message-user"]{background:#e5f4e8}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CoursePilot — local diagnostics</h1>
+    <p>No Coursera account, external requests, paid API calls, or real assignment submissions. All responses and submissions below are local mocks.</p>
+    <nav aria-label="Fixture scenarios">
+      <a href="/learn/fixture/assignment-submission/check/debug?scenario=delayed">Delayed questions</a>
+      <a href="/learn/fixture/assignment-submission/check/debug?scenario=stale">Stale request</a>
+      <a href="/learn/fixture/supplement/check/debug?scenario=ownership">Ownership / connection</a>
+      <a href="/learn/fixture/assignment-submission/check/debug?scenario=pending">Pending AI</a>
+      <a href="/learn/fixture/assignment-submission/check/debug?scenario=stalled">Stalled Resume</a>
+      <a href="/learn/fixture/coach/check/debug?scenario=coach">Coach</a>
+      <a href="/learn/fixture/ungradedWidget/check/debug?scenario=widget">Interactive widget</a>
+      <a href="/learn/fixture/assignment-submission/auto/debug?scenario=quiz-auto">Quiz auto-submit</a>
+      <a href="/learn/fixture/assignment-submission/confirm/debug?scenario=quiz-confirm">Ready to submit confirmation</a>
+      <a href="/learn/fixture/assignment-submission/honor/debug?scenario=quiz-honor">Quiz honor gate</a>
+      <a href="/learn/fixture/assignment-submission/honor-auto/debug?scenario=quiz-auto-honor">Honor Code auto checkbox</a>
+      <a href="/learn/fixture/assignment-submission/honor-unknown/debug?scenario=quiz-auto-honor-unknown">Changed Honor Code text</a>
+      <a href="/learn/fixture/assignment-submission/result/debug?scenario=quiz-after-submit">Quiz result wait</a>
+      <a href="/learn/fixture/assignment-submission/result/view-feedback?scenario=quiz-feedback-pass">Feedback passing grade</a>
+      <a href="/learn/fixture/assignment-submission/result/view-feedback?scenario=quiz-feedback-fail">Feedback failing grade</a>
+      <a href="/learn/fixture/assignment-submission/result/view-feedback?scenario=quiz-feedback-unknown">Feedback missing threshold</a>
+      <a href="/learn/fixture/coach/auto/debug?scenario=coach-auto">Coach auto</a>
+      <a href="/learn/fixture/coach/text/debug?scenario=coach-text">Coach plain-text API</a>
+      <a href="/learn/fixture/coach/completed/debug?scenario=coach-completed">Coach completed screen</a>
+      <a href="/learn/fixture/coach/ended/debug?scenario=coach-ended">Coach ended without completion</a>
+      <a href="/learn/fixture/coach/draft/debug?scenario=coach-draft">Coach draft</a>
+      <a href="/learn/fixture/coach/offline/debug?scenario=coach-offline">Coach offline</a>
+    </nav>
+    <p id="scenario-description"></p>
+  </header>
+  <section aria-label="Fixture controls">
+    <h2 id="connection-label">Mock connection: starting</h2>
+    <div class="controls">
+      <button id="sample-now" type="button">Sample now</button>
+      <button id="manual-run" type="button">Manual run / resume</button>
+      <button id="lose-ownership" type="button">Lose ownership (context null)</button>
+      <button id="disconnect" type="button">Disconnect (ok false)</button>
+      <button id="reconnect" type="button">Reconnect managed</button>
+    </div>
+    <div class="controls">
+      <button id="load-questions" type="button">Load mock questions</button>
+      <button id="open-modal" type="button">Open mock assignment modal</button>
+      <button id="enable-resume" type="button">Enable Resume to open modal</button>
+      <button id="hold-ai" type="button">Hold future AI replies</button>
+      <button id="release-ai" type="button">Release held AI replies</button>
+    </div>
+    <div class="controls">
+      <button id="show-quiz-pass" type="button">Show quiz pass result</button>
+      <button id="insert-draft" type="button">Insert user draft</button>
+      <button id="clear-draft" type="button">Clear user draft</button>
+      <button id="inject-coach-instruction" type="button">Add untrusted Coach instruction</button>
+    </div>
+  </section>
+  <main>
+    <h1 id="fixture-title">Fixture assignment</h1>
+    <p id="automation-summary" role="status"></p>
+    <p id="reading-copy" hidden>This is local fixture material. Reading activity and manual-activity classification can be checked without a real course.</p>
+    <div id="cover" hidden><p>Practice assignment cover. This button intentionally does nothing until enabled in the fixture controls.</p><button id="resume-assignment" type="button">Resume assignment</button></div>
+    <form id="quiz-form">
+      <div id="questions"></div>
+      <div id="quiz-honor" data-testid="HonorCodeAgreement" hidden><h3>Coursera Honor Code</h3><p id="honor-statement">By clicking Submit, you confirm this work is your own. Submitting work created with AI tools may result in course failure or account deactivation according to Coursera Honor Code policy.</p><label><input id="honor-checkbox" type="checkbox" name="honor-code">I, Test Participant, understand and agree.</label></div>
+      <button id="quiz-submit" type="submit" hidden>Submit assignment</button>
+      <p id="quiz-status" role="status"></p>
+    </form>
+    <h2 id="quiz-result" hidden></h2>
+    <section id="coach-area" data-testid="dialogue-content" hidden>
+      <div id="coursera-coach-item" data-testid="coursera-coach-item">
+        <div id="coach-messages" data-testid="ai-coach-chat-messages" role="list" aria-busy="false"></div>
+        <div id="coach-composer" role="group" aria-label="Chat message composer">
+          <textarea id="coach-input" aria-label="Send a message" maxlength="7999"></textarea>
+          <button id="coach-send" type="button" aria-label="Send message" disabled>Send message</button>
+        </div>
+        <h2 id="coach-complete" hidden>Dialogue completed</h2>
+        <div id="coach-ended" hidden>
+          <div data-testid="chat-ended-message"><p>The Dialogue has ended. Start a new chat to clear your chat history and start fresh.</p></div>
+          <div data-testid="chat-end-buttons">
+            <button id="coach-try-again" type="button"><span>Try again</span></button>
+            <div id="coach-completed-badge">Completed</div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <div id="next-material" hidden>
+      <a id="next-local-link" href="/learn/fixture/supplement/next/debug">Go to next item</a>
+      <button id="next-local-button" type="button">Next lesson</button>
+      <p>The same-course link is local HTTP. The button fallback records continuation without an external navigation.</p>
+    </div>
+  </main>
+  <section id="assignment-modal" class="cds-FullscreenDialog-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title" hidden>
+    <h1 id="modal-title">Fixture assignment</h1>
+    <div id="feedback-alert" role="alert" hidden>
+      <div data-testid="AssignmentViewTopBanner">
+        <h2>Your grade: <span id="feedback-grade">100%</span></h2>
+        <p>Your latest: 100% • Your highest: 100% • <span id="feedback-threshold">To pass you need at least 75%.</span> We keep your highest score.</p>
+        <button id="feedback-next" type="button">Next item</button>
+      </div>
+    </div>
+    <div id="modal-questions"></div>
+    <p>Mock answers only. No submit control exists.</p>
+    <button id="close-modal" type="button">Close mock modal</button>
+  </section>
+  <h2>Fixture diagnostics</h2>
+  <section id="submit-confirmation" role="dialog" aria-modal="true" aria-labelledby="submit-confirmation-title" hidden>
+    <h2 id="submit-confirmation-title">Ready to submit?</h2>
+    <button id="confirm-submit" type="button">Submit</button>
+    <button id="cancel-submit" type="button">Cancel</button>
+  </section>
+  <pre id="diagnostics" aria-live="off">Starting…</pre>
+  <script src="/harness.js"></script>
+  <script src="/content.js"></script>
+</body>
+</html>

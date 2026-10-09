@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CoursePilot — local video checks</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f0f3eb;color:#243426;font:15px/1.5 system-ui,sans-serif}header,main,.diagnostics{max-width:880px;margin:20px auto;padding:20px 26px;border-radius:18px;background:#fff;border:1px solid #dce4d6}header{background:#253528;color:#f1f7ed}h1{font-size:25px;margin:0 0 8px}h2{font-size:19px;margin:0 0 12px}p{margin:8px 0}.muted{color:#677563}header .muted{color:#c8d6c1}.controls{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}button{border:1px solid #b7c6b0;background:#f9fcf5;border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer}button:hover{background:#eaf4dd}button:disabled{opacity:.5;cursor:default}button:focus-visible{outline:3px solid #78a12c;outline-offset:2px}video{display:block;width:100%;max-height:270px;background:#1c2a20;border-radius:12px}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.stat{padding:10px 12px;background:#f0f5eb;border-radius:10px}.stat b{display:block;font-size:23px}.stat span{font-size:12px;color:#586952}.result{padding:12px;border-radius:10px;background:#e7f1d5;font-weight:600}pre{font:12px/1.45 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0}#celebration{position:fixed;inset:0;z-index:1000;background:#12211665;display:grid;place-items:center}.dialog{width:min(420px,90vw);padding:30px;background:#fff;border-radius:18px;box-shadow:0 20px 70px #12211640}.star{font-size:45px;color:#8251d5}.dialog button{width:100%;margin-top:16px;background:#2757b9;color:white}.badge{font-size:11px;text-transform:uppercase;letter-spacing:1.3px;color:#bce586}[hidden]{display:none!important}@media(max-width:700px){header,main,.diagnostics{margin:12px;padding:18px}.stats{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="badge">Isolated browser QA • no external requests</div>
+    <h1>CoursePilot video continuity</h1>
+    <p class="muted">Real HTML video, generated locally. Delayed player → pause → celebration → Question / Skip → end → next item.</p>
+  </header>
+  <section class="diagnostics" aria-label="Video diagnostics">
+    <h2 id="phase" role="status">Preparing a local 10-second video…</h2>
+    <div class="stats">
+      <div class="stat"><b id="play-count">0</b><span>Play events</span></div>
+      <div class="stat"><b id="pause-count">0</b><span>Pause events</span></div>
+      <div class="stat"><b id="close-count">0</b><span>Popups dismissed</span></div>
+      <div class="stat"><b id="next-count">0</b><span>Next-item transitions</span></div>
+      <div class="stat"><b id="skip-count">0</b><span>Video questions skipped</span></div>
+    </div>
+    <div class="controls">
+      <button id="pause-video" type="button" disabled>Pause video</button>
+      <button id="pause-subject" type="button">Pause subject</button>
+      <button id="resume-subject" type="button">Resume subject</button>
+      <button id="show-celebration" type="button">Show Module complete popup</button>
+      <button id="restart-check" type="button" disabled>Restart check (pause + popup)</button>
+      <button id="sample-now" type="button">Sample now</button>
+    </div>
+    <p id="compact-state" class="muted"></p>
+    <p id="result" class="result" hidden></p>
+    <details><summary>Detailed diagnostics</summary><pre id="diagnostics"></pre></details>
+  </section>
+  <main id="lesson-main">
+    <h1 id="lesson-title">Local video: delayed player and automatic resume</h1>
+    <p id="loading" class="muted">The player deliberately does not exist while MediaRecorder generates its source.</p>
+    <div id="video-slot" data-testid="playerContainer">
+      <section id="video-question" class="dialog" role="dialog" aria-modal="true" data-testid="scroll-container" aria-labelledby="video-question-title" hidden>
+        <h2 id="video-question-title">Question</h2>
+        <fieldset class="rc-VideoQuizQuestionArea">
+          <legend>This local question is optional and should be skipped without answering.</legend>
+          <label><input type="radio" name="video-question" value="true">True</label>
+          <label><input type="radio" name="video-question" value="false">False</label>
+        </fieldset>
+        <div class="rc-VideoQuizSubmissionArea">
+          <button id="video-question-submit" type="button" data-testid="VideoQuizSubmission-Button" disabled>Submit</button>
+          <button id="video-question-skip" type="button">Skip</button>
+        </div>
+      </section>
+    </div>
+    <p id="next-copy" hidden>Local continuation reached. No real course or account was changed.</p>
+    <button id="next-item" type="button" hidden>Go to next item</button>
+  </main>
+  <div id="celebration" hidden>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="celebration-title">
+      <div class="star" aria-hidden="true">✦</div>
+      <h2 id="celebration-title">Module complete!</h2>
+      <p>Great work in completing the module. Here are some highlights:</p>
+      <p>1 locally generated video</p>
+      <button id="close-celebration" type="button" aria-label="Close celebration dialog">Close</button>
+    </section>
+  </div>
+  <script src="/video-harness.js"></script>
+  <script src="/content.js"></script>
+</body>
+</html>
