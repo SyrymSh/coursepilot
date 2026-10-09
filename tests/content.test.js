@@ -50,18 +50,19 @@ test('explicit resume clears stalled launch and loading guards without clearing 
   assert.equal(state.quizFingerprint, 'quiz-key');
 });
 
-test('known iframe intro requests Continue without AI or marking the material complete', async () => {
+test('known iframe work continues without AI or prematurely marking the material complete', async () => {
   const url = 'https://www.coursera.org/learn/foundations-of-cybersecurity/ungradedWidget/l9B7s/explore-keep-organizations-secure';
   const source = 'https://d10o6em2qtnr4q.cloudfront.net/assets/d96617fd0cc347daaf2a8420f66905f1/tmp/S30P001-security-analysts-en/index.html';
   for (const enabled of [true, false]) {
-    const app = runtimeFixture({ ok: true, context: { subjectId: 'fixture', enabled } }, { widget: { url, source } });
+    const app = runtimeFixture({ ok: true, context: { subjectId: 'fixture', enabled } }, { widget: { url, source, reply: { ok: true, status: 'working', step: 1 } } });
     await new Promise(setImmediate);
     assert.equal(app.messages.filter((message) => message.type === 'CONTENT_WIDGET_CONTINUE').length, enabled ? 1 : 0);
     assert.equal(app.messages.filter((message) => message.type.startsWith('AI_')).length, 0);
     assert.equal(app.nextClicks(), 0);
     if (enabled) {
       app.sample(); await new Promise(setImmediate);
-      assert.match(app.messages.filter((message) => message.type === 'CONTENT_SAMPLE').at(-1).page.reason, /Continue.*не означает завершение/u);
+      assert.equal(app.markClicks(), 0);
+      assert.equal(app.messages.filter((message) => message.type === 'CONTENT_SAMPLE').at(-1).page.reason, undefined);
     }
   }
 });
@@ -156,7 +157,7 @@ test('answers are accepted only with complete unique question IDs and valid opti
   ]) assert.equal(validateAnswers(quiz, answer), false);
 });
 
-function runtimeFixture(initialResponse, { cover = false, attestation = false, attestationLabel = 'I certify this is my own work and accept the Honor Code.', honorForm = null, extraAttestation = false, disabledSubmit = false, stored = new Map(), selected = false, feedback = null, route = 'attempt', confirmation = null, widget = null } = {}) {
+function runtimeFixture(initialResponse, { cover = false, coverResult = null, timedStart = null, outline = null, attestation = false, attestationLabel = 'I certify this is my own work and accept the Honor Code.', honorForm = null, extraAttestation = false, disabledSubmit = false, stored = new Map(), selected = false, feedback = null, route = 'attempt', confirmation = null, widget = null, manual = null } = {}) {
   const created = [];
   const makeElement = (tag = 'div', content = '') => {
     const attributes = new Map();
@@ -164,7 +165,7 @@ function runtimeFixture(initialResponse, { cover = false, attestation = false, a
       tag, textContent: content, isConnected: true, children: [], hidden: false,
       getAttribute: (name) => attributes.get(name) || null,
       setAttribute: (name, value) => attributes.set(name, value),
-      closest: () => null, matches: () => false, querySelector: () => null, querySelectorAll: () => [],
+      closest: () => null, matches: (selector) => selector === tag, querySelector: () => null, querySelectorAll: () => [],
       getClientRects() { return this.hidden ? [] : [{}]; }, addEventListener: () => {},
       append(...children) { this.children.push(...children); },
       attachShadow() { this.shadow = makeElement('shadow'); return this.shadow; },
@@ -183,11 +184,16 @@ function runtimeFixture(initialResponse, { cover = false, attestation = false, a
   }));
   inputs[0].checked = selected;
   const main = makeElement('main');
+  if (manual?.body) main.textContent = manual.body;
   let launchClicks = 0;
   let submitClicks = 0;
   let nextClicks = 0;
   let attestationClicks = 0;
   let confirmationClicks = 0;
+  let markClicks = 0;
+  let startContinueClicks = 0;
+  let startCancelClicks = 0;
+  let startVisible = timedStart?.visible === true;
   let confirmationVisible = confirmation?.visible === true;
   let failWrites = false;
   let result = null;
@@ -211,11 +217,66 @@ function runtimeFixture(initialResponse, { cover = false, attestation = false, a
     click() { confirmationClicks += 1; if (!confirmation?.inert) confirmationVisible = false; } });
   const confirmationCancel = makeElement('button', 'Cancel');
   const confirmationDialog = makeElement('section', `${confirmationHeading.textContent} Submit Cancel${confirmation?.extraText ? ' I accept other terms' : ''}`);
+  confirmationDialog.setAttribute('role', confirmation?.role ?? 'dialog');
+  confirmationDialog.setAttribute('aria-modal', confirmation?.modal === false ? 'false' : 'true');
+  confirmationDialog.hidden = confirmation?.hidden === true;
   confirmationDialog.querySelectorAll = (selector) => selector === 'h1,h2,h3,[role="heading"]' ? [confirmationHeading] :
     selector === 'button' ? [confirmationSubmit, confirmationCancel] : [];
   confirmationDialog.querySelector = () => confirmation?.extraInput ? honor : null;
   const next = Object.assign(makeElement('button', 'Go to next item'), { type: 'button', click: () => { nextClicks += 1; } });
-  const resume = Object.assign(makeElement('button', 'Resume assignment'), { type: 'button', click: () => { launchClicks += 1; } });
+  if (manual) {
+    next.disabled = manual.disabled === true;
+    next.closest = (selector) => selector === 'form' && manual.form ? main : null;
+    if (manual.href) { next.href = manual.href; next.matches = (selector) => selector === 'a[href]'; }
+  }
+  const duplicateNext = Object.assign(makeElement('button', manual?.alternateNextLabel ?? 'Go to next item'), {
+    type: 'button', disabled: manual?.disabled === true, click: () => { nextClicks += 1; },
+    closest: (selector) => selector === 'form' && manual?.form ? main : null,
+  });
+  const draft = Object.assign(makeElement('textarea'), { value: manual?.draft || '' });
+  const mark = Object.assign(makeElement('button', 'Mark as completed'), { type: 'submit', disabled: widget?.disabled === true,
+    click() { markClicks += 1; if (!widget?.inert) widget.completed = true; } });
+  const completedAnchor = Object.assign(makeElement('a'), { href: widget?.url, getAttribute: () => 'selected link, Ungraded Plugin, Explore: Keep organizations secure, Completed, 10 min',
+    querySelector: () => widget?.noSuccessIcon ? null : makeElement('svg') });
+  const outlineNext = Object.assign(makeElement('a'), { href: widget?.nextOutlineUrl });
+  const resume = Object.assign(makeElement('button', 'Resume assignment'), { type: 'button', click: () => { launchClicks += 1; if (timedStart) startVisible = true; } });
+  const startHeading = makeElement('h2', timedStart?.title ?? 'Start new attempt?');
+  const startContinue = Object.assign(makeElement('button', 'Continue'), { type: 'button', click: () => { startContinueClicks += 1; startVisible = false; } });
+  const startCancel = Object.assign(makeElement('button', 'Cancel'), { type: 'button', disabled: timedStart?.disabled === true,
+    click: () => { startCancelClicks += 1; if (!timedStart?.inert) { startVisible = false; startDialog.hidden = true; } } });
+  const startDialog = makeElement('section', timedStart?.text ?? `${startHeading.textContent} You have 1 hour to submit this attempt. You will have 2 attempts left after the time runs out. After that, you will have to wait 8h before you can try again. Continue Cancel`);
+  startDialog.setAttribute('role', 'dialog');
+  startDialog.setAttribute('aria-modal', 'true');
+  startDialog.hidden = timedStart?.hidden === true;
+  startDialog.querySelectorAll = (selector) => selector === 'h1,h2,h3,[role="heading"]' ? [startHeading] :
+    selector === 'button' ? timedStart?.duplicateCancel ? [startContinue, startCancel, startCancel] : [startContinue, startCancel] :
+      selector === 'input,textarea,[contenteditable="true"]' && timedStart?.extraInput ? [honor] : [];
+  startDialog.querySelector = () => timedStart?.extraInput ? honor : null;
+  const resultMessage = makeElement('p', coverResult?.message ?? 'You passed!');
+  const resultThreshold = makeElement('p', 'To pass you need a grade of at least 75%.');
+  const resultGrade = makeElement('div', '100%');
+  const resultTimestamp = makeElement('p', 'Submitted Oct 10, 3:17 AM +06');
+  const resultStatus = makeElement('section', `${resultMessage.textContent} ${resultThreshold.textContent} ${resultGrade.textContent} ${resultTimestamp.textContent} View feedback`);
+  resultStatus.setAttribute('role', 'status');
+  resultStatus.hidden = coverResult?.hidden === true;
+  resultStatus.closest = (selector) => selector.startsWith('fieldset') && coverResult?.inQuestion ? group : null;
+  resultMessage.closest = resultStatus.closest;
+  resultMessage.parentElement = resultStatus;
+  resultStatus.querySelectorAll = (selector) => selector === 'p' || selector === 'p,h1,h2,h3,[role="heading"]' ? [resultMessage, resultThreshold, resultTimestamp] : [];
+  const courseOutline = makeElement('aside');
+  const outlineGroups = [makeElement('ul'), makeElement('ul')];
+  const outlineAnchors = (outline?.urls ?? []).map((href, index) => Object.assign(makeElement('a', `Lesson ${index + 1}`), {
+    href, matches: (selector) => selector === 'a[href]',
+    closest: (selector) => selector === 'aside,nav,[data-testid="course-outline"],[aria-label="Course outline"]' ? outline?.unknownRoot ? null : courseOutline :
+      selector === 'ul,ol' ? outlineGroups[index >= (outline?.moduleBreak ?? Infinity) ? 1 : 0] : null,
+  }));
+  const unrelatedAnchor = outline?.outsideUrl ? Object.assign(makeElement('a', 'Recommended lesson'), { href: outline.outsideUrl, matches: (selector) => selector === 'a[href]' }) : null;
+  courseOutline.querySelectorAll = (selector) => selector === 'a[href]' ? outlineAnchors : [];
+  courseOutline.contains = (element) => outlineAnchors.includes(element);
+  outlineGroups.forEach((module, groupIndex) => {
+    module.contains = (element) => outlineAnchors.indexOf(element) >= 0 &&
+      (outlineAnchors.indexOf(element) >= (outline?.moduleBreak ?? Infinity) ? 1 : 0) === groupIndex;
+  });
   const feedbackGrade = makeElement('h2', feedback?.grade ?? 'Your grade: 100%');
   const feedbackAlert = makeElement('div');
   const feedbackBanner = makeElement('div', feedback?.text ?? 'Your grade: 100% Your latest: 100% Your highest: 100% To pass you need at least 75%. We keep your highest score. Next item');
@@ -223,22 +284,37 @@ function runtimeFixture(initialResponse, { cover = false, attestation = false, a
   feedbackBanner.closest = (selector) => selector === '[role="alert"]' ? feedback?.alert === false ? null : feedbackAlert : feedback?.inQuestion ? group : null;
   feedbackBanner.querySelectorAll = (selector) => selector === 'h2' ? feedback?.ambiguous ? [feedbackGrade, feedbackGrade] : [feedbackGrade] : [];
   main.querySelectorAll = (selector) => {
+    if (selector === 'button[data-testid="mark-complete"]') return widget?.missingMark ? [] : widget ? [mark] : [];
     if (selector === 'iframe[data-testid="widget-iframe"]' && widget?.source) return [Object.assign(makeElement('iframe'), { getAttribute: () => widget.source })];
     if (selector === 'input[type="radio"],input[type="checkbox"]') return cover ? [] : [...inputs, ...(attestation ? [honor] : [])];
     if (selector === 'input[type="checkbox"]') return attestation && !cover ? [honor, ...(extraAttestation ? [otherAttestation] : [])] : [];
     if (selector === '[data-testid="HonorCodeAgreement"]') return honorForm ? [honorBlock] : [];
     if (selector === 'button,a[href]') return cover ? [resume] : [];
     if (selector === 'button,input[type="submit"]') return cover ? [] : [submit];
-    if (selector === 'a[href],button') return [next];
-    if (selector === 'h1,h2,[role="status"]') return result ? [result] : [];
+    if (selector === 'a[href],button') return manual?.missing ? [] : manual?.duplicate ? [next, duplicateNext] : [next];
+    if (selector === 'textarea,input[type="text"],[contenteditable="true"]') return manual?.draft ? [draft] : [];
+    if (selector === 'h1,h2,[role="status"]') return result ? [result] : coverResult ? [resultStatus] : [];
+    if (selector === '[role="status"]') return coverResult ? [resultStatus] : [];
+    if (selector === '[role="status"] p') return coverResult && !coverResult.hidden ? [resultMessage, resultThreshold, resultTimestamp] : [];
     if (selector === '[data-testid="AssignmentViewTopBanner"]') return feedback?.missing ? [] : feedback ? [feedbackBanner] : [];
     return [];
   };
+  if (confirmation?.inAssignment) {
+    main.setAttribute('role', 'dialog');
+    main.setAttribute('aria-modal', 'true');
+    main.matches = (selector) => selector === '.cds-FullscreenDialog-dialog';
+  }
   const document = {
     title: 'Quiz fixture', body: main, documentElement: makeElement('html'), visibilityState: 'visible',
     hasFocus: () => true, getElementById: () => null, addEventListener: () => {},
     createElement: makeElement, querySelector: () => main,
-    querySelectorAll: (selector) => selector.startsWith('[role="dialog"]') && confirmationVisible ? [confirmationDialog] : [],
+    querySelectorAll: (selector) => {
+      if (selector === 'a[href]' && widget?.completed) return [completedAnchor, ...(widget?.nextOutlineUrl ? [outlineNext] : [])];
+      if (selector === 'a[href]' && outline) return [...outlineAnchors, ...(unrelatedAnchor ? [unrelatedAnchor] : [])];
+      const dialogs = [...(confirmation?.inAssignment ? [main] : []), ...(confirmationVisible ? [confirmationDialog] : []), ...(startVisible ? [startDialog] : [])];
+      return dialogs.filter((dialog) => dialog.getAttribute('aria-modal') === 'true' &&
+        selector.split(',').some((part) => part.trim() === `[role="${dialog.getAttribute('role')}"][aria-modal="true"]`));
+    },
   };
   const timers = new Map();
   const intervals = new Map();
@@ -249,6 +325,9 @@ function runtimeFixture(initialResponse, { cover = false, attestation = false, a
   let clock = 100_000;
   let answer;
   let command;
+  const navigationTargets = [];
+  const currentLocation = new URL(manual?.url ?? widget?.url ?? `https://www.coursera.org/learn/fixture/assignment-submission/id/quiz/${route}`);
+  currentLocation.assign = (href) => { navigationTargets.push(href); currentLocation.href = href; };
   const runtime = {
     id: 'fixture-extension', onMessage: { addListener(listener) { command = listener; } },
     sendMessage(message, callback) {
@@ -256,13 +335,14 @@ function runtimeFixture(initialResponse, { cover = false, attestation = false, a
       if (message.type === 'AI_QUIZ') answer = () => callback({ ok: true, autoSubmit: response.context?.autoSubmit === true,
         answers: message.quiz.questions.map((question) => ({ questionId: question.id, optionIds: [question.options[0].id] })),
       });
-      else if (message.type === 'CONTENT_WIDGET_CONTINUE') callback(widget?.reply ?? { ok: true, status: 'opened' });
+      else if (message.type === 'CONTENT_WIDGET_CONTINUE') callback(widget?.reply ?? { ok: true, status: 'complete' });
+      else if (message.type === 'CONTENT_SKIP_MANUAL' && manual?.skipReply) callback(manual.skipReply);
       else callback(response);
     },
   };
   runInNewContext(readFileSync(new URL('../extension/content.js', import.meta.url), 'utf8'), {
     URL, document, window: { addEventListener: () => {} }, chrome: { runtime },
-    location: new URL(widget?.url ?? `https://www.coursera.org/learn/fixture/assignment-submission/id/quiz/${route}`),
+    location: currentLocation,
     Date: { now: () => clock }, performance: { now: () => clock }, getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
     sessionStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => { if (failWrites) throw new Error('Storage unavailable'); storage.set(key, value); }, removeItem: (key) => storage.delete(key) },
     setTimeout: (callback, milliseconds) => {
@@ -274,7 +354,7 @@ function runtimeFixture(initialResponse, { cover = false, attestation = false, a
     setInterval: (callback, milliseconds) => intervals.set(milliseconds, callback), queueMicrotask,
   });
   return {
-    messages, inputs, storage, honor, submit, confirmationSubmit,
+    messages, inputs, storage, honor, submit, confirmationSubmit, mark, navigationTargets,
     sample: () => intervals.get(10_000)(),
     checkNavigation: () => intervals.get(1_000)(),
     replyWith(value) { response = value; },
@@ -284,10 +364,14 @@ function runtimeFixture(initialResponse, { cover = false, attestation = false, a
     launchClicks: () => launchClicks,
     submitClicks: () => submitClicks,
     confirmationClicks: () => confirmationClicks,
+    startContinueClicks: () => startContinueClicks,
+    startCancelClicks: () => startCancelClicks,
     failStorageWrites: () => { failWrites = true; },
     nextClicks: () => nextClicks,
+    markClicks: () => markClicks,
     attestationClicks: () => attestationClicks,
     showCover: () => { cover = true; },
+    showStartDialog: () => { startVisible = true; startDialog.hidden = false; },
     setOutcome: (heading) => { result = makeElement('h2', heading); },
     answerClicks: () => answerClicks,
     widget: () => created.find((element) => element.id === 'coursepilot-helper'),
@@ -296,6 +380,241 @@ function runtimeFixture(initialResponse, { cover = false, attestation = false, a
 }
 
 const flushRuntime = () => new Promise((resolve) => setImmediate(resolve));
+
+const skipContext = { ok: true, context: { subjectId: 'manual-subject', enabled: true, skipManual: true, allowAI: false, autoSubmit: false } };
+const manualLab = { url: 'https://www.coursera.org/learn/fixture/lab/manual/lesson' };
+
+test('manual materials are recorded before one continuation, without completion, API or submission', async () => {
+  for (const type of ['lab', 'peer', 'gradedProgramming', 'ungradedWidget', 'reading', 'supplement', 'coach', 'quiz']) {
+    const app = runtimeFixture(skipContext, { manual: { url: `https://www.coursera.org/learn/fixture/${type}/manual/lesson` } });
+    await flushRuntime();
+    const records = app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL');
+    assert.equal(records.length, 1, type);
+    assert.ok(records[0].reason);
+    assert.equal(app.nextClicks(), 1, type);
+    assert.equal(app.submitClicks(), 0);
+    assert.equal(app.markClicks(), 0);
+    assert.equal(app.messages.filter(({ type }) => type.startsWith('AI_')).length, 0);
+    assert.ok(app.messages.every((message) => !message.completedCourse));
+    app.sample(); await flushRuntime();
+    assert.equal(app.nextClicks(), 1);
+  }
+});
+
+test('manual skipping obeys ownership, pause and opt-out', async () => {
+  for (const context of [null, { ...skipContext.context, enabled: false }, { ...skipContext.context, skipManual: false }]) {
+    const app = runtimeFixture({ ok: true, context }, { manual: manualLab });
+    await flushRuntime();
+    assert.equal(app.nextClicks(), 0);
+    assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0);
+  }
+});
+
+test('manual skipping does not bypass dialogs or abandon a text draft', async () => {
+  for (const options of [{ manual: { ...manualLab, draft: 'Keep my unsent work' } }, { manual: manualLab, confirmation: { visible: true } }]) {
+    const app = runtimeFixture(skipContext, options);
+    await flushRuntime();
+    assert.equal(app.nextClicks(), 0);
+    assert.equal(app.confirmationClicks(), 0);
+    assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0);
+  }
+});
+
+test('manual skip needs an unambiguous available next control outside forms in the same course', async () => {
+  for (const patch of [{ missing: true }, { duplicate: true, alternateNextLabel: 'Next' }, { disabled: true }, { form: true },
+    { href: 'https://evil.test/learn/fixture/lecture/next' },
+    { href: 'https://www.coursera.org/learn/other/lecture/next' }, { href: manualLab.url }]) {
+    const app = runtimeFixture(skipContext, { manual: { ...manualLab, ...patch } });
+    await flushRuntime();
+    assert.equal(app.nextClicks(), 0);
+    assert.equal(app.navigationTargets.length, 0);
+    assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0);
+  }
+});
+
+test('two equivalent next-item buttons cause one recorded skip, not an ambiguous stall', async () => {
+  const app = runtimeFixture(skipContext, { manual: { ...manualLab, duplicate: true } });
+  await flushRuntime();
+  assert.equal(app.nextClicks(), 1);
+  assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 1);
+  app.sample(); await flushRuntime();
+  assert.equal(app.nextClicks(), 1);
+  assert.equal(app.submitClicks(), 0);
+  assert.equal(app.markClicks(), 0);
+  assert.equal(app.messages.filter(({ type }) => type.startsWith('AI_')).length, 0);
+});
+
+test('manual continuation crosses a module boundary inside the same course outline', async () => {
+  const target = 'https://www.coursera.org/learn/fixture/lecture/next/module-two';
+  const app = runtimeFixture(skipContext, {
+    manual: { ...manualLab, missing: true },
+    outline: { urls: [manualLab.url, target], moduleBreak: 1, outsideUrl: 'https://www.coursera.org/learn/fixture/lecture/recommended' },
+  });
+  await flushRuntime();
+  assert.deepEqual(app.navigationTargets, [target]);
+  assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 1);
+  assert.equal(app.submitClicks(), 0);
+  assert.equal(app.markClicks(), 0);
+  assert.equal(app.messages.filter(({ type }) => type.startsWith('AI_')).length, 0);
+});
+
+test('outline continuation never crosses unrelated roots, courses, or insecure links', async () => {
+  for (const outline of [
+    { urls: [manualLab.url], outsideUrl: 'https://www.coursera.org/learn/fixture/lecture/recommended' },
+    { urls: [manualLab.url, 'https://www.coursera.org/learn/other/lecture/next'] },
+    { urls: [manualLab.url, 'http://www.coursera.org/learn/fixture/lecture/next'] },
+    { urls: [manualLab.url, 'https://www.coursera.org/learn/fixture/lecture/next'], moduleBreak: 1, unknownRoot: true },
+  ]) {
+    const app = runtimeFixture(skipContext, { manual: { ...manualLab, missing: true }, outline });
+    await flushRuntime();
+    assert.equal(app.nextClicks(), 0);
+    assert.equal(app.navigationTargets.length, 0, JSON.stringify(outline));
+    assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0);
+  }
+});
+
+test('an unsupported quiz cover skips through equivalent next buttons after its bounded load wait', async () => {
+  const app = runtimeFixture({ ok: true, context: { ...skipContext.context, allowAI: true, autoSubmit: true } }, {
+    cover: true, manual: { url: 'https://www.coursera.org/learn/fixture/assignment-submission/id/unsupported', duplicate: true },
+  });
+  await flushRuntime();
+  assert.equal(app.launchClicks(), 1);
+  app.advance(20_001); app.sample(); await flushRuntime();
+  assert.equal(app.nextClicks(), 1);
+  assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 1);
+  assert.equal(app.messages.filter(({ type }) => type.startsWith('AI_')).length, 0);
+  assert.equal(app.submitClicks(), 0);
+  assert.equal(app.markClicks(), 0);
+});
+
+test('manual skip stops if recording or persistence fails and rechecks its returned permission', async () => {
+  for (const skipReply of [{ ok: false, error: 'Cannot record' }, { ok: true, context: null },
+    { ok: true, context: { ...skipContext.context, enabled: false } },
+    { ok: true, context: { ...skipContext.context, skipManual: false } }]) {
+    const app = runtimeFixture(skipContext, { manual: { ...manualLab, skipReply } });
+    await flushRuntime();
+    assert.equal(app.nextClicks(), 0);
+  }
+  const stored = new Map(); stored.set = () => { throw new Error('Storage unavailable'); };
+  const app = runtimeFixture(skipContext, { manual: manualLab, stored });
+  await flushRuntime();
+  assert.equal(app.nextClicks(), 0);
+});
+
+test('an inert manual continuation never clicks again across reload and stops after the navigation timeout', async () => {
+  const app = runtimeFixture(skipContext, { manual: manualLab });
+  await flushRuntime();
+  assert.equal(app.nextClicks(), 1);
+  app.advance(20_001); app.checkNavigation(); await flushRuntime();
+  assert.match(app.displayedText(), /Переход не завершился/u);
+  const restored = runtimeFixture(skipContext, { manual: manualLab, stored: app.storage });
+  await flushRuntime();
+  assert.equal(restored.nextClicks(), 0);
+  assert.match(restored.displayedText(), /уже запрашивался/u);
+});
+
+test('CAPTCHA, login and unknown pages stop without being automatically skipped', async () => {
+  for (const url of ['https://www.coursera.org/login', 'https://www.coursera.org/learn/fixture/unknown/manual']) {
+    const app = runtimeFixture(skipContext, { manual: { url } });
+    await flushRuntime();
+    assert.equal(app.nextClicks(), 0);
+    assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0);
+  }
+  const captcha = runtimeFixture(skipContext, { manual: { ...manualLab, body: 'Verify you are human' } });
+  await flushRuntime();
+  assert.equal(captcha.nextClicks(), 0);
+  assert.equal(captcha.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0);
+});
+
+test('skip mode waits for a submitted result, then can retain an explicitly failed quiz without another attempt', async () => {
+  const app = runtimeFixture({ ok: true, context: { ...skipContext.context, allowAI: true, autoSubmit: true } });
+  await flushRuntime(); app.releaseAI(); await flushRuntime();
+  assert.equal(app.submitClicks(), 1);
+  app.sample(); await flushRuntime();
+  assert.equal(app.nextClicks(), 0);
+  assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0);
+  app.setOutcome('You did not pass');
+  app.sample(); await flushRuntime();
+  assert.equal(app.nextClicks(), 1);
+  assert.equal(app.submitClicks(), 1);
+  assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 1);
+  assert.equal(app.messages.filter(({ type }) => type === 'AI_QUIZ').length, 1);
+});
+
+const infographic = (patch = {}) => ({
+  url: 'https://www.coursera.org/learn/foundations-of-cybersecurity/ungradedWidget/l9B7s/explore-keep-organizations-secure',
+  source: 'https://d10o6em2qtnr4q.cloudfront.net/assets/d96617fd0cc347daaf2a8420f66905f1/tmp/S30P001-security-analysts-en/index.html',
+  ...patch,
+});
+const widgetContext = { ok: true, context: { subjectId: 'owned-widget', enabled: true } };
+
+test('observed infographic success marks once, waits for Coursera completion, and advances once across reload', async () => {
+  const widget = infographic();
+  const app = runtimeFixture(widgetContext, { widget });
+  await flushRuntime();
+  assert.equal(app.markClicks(), 1);
+  assert.equal(app.nextClicks(), 0);
+  app.checkNavigation(); await flushRuntime();
+  assert.equal(app.nextClicks(), 1);
+  assert.equal(app.messages.filter((message) => message.type.startsWith('AI_')).length, 0);
+  const reloaded = runtimeFixture(widgetContext, { widget, stored: app.storage });
+  await flushRuntime();
+  assert.equal(reloaded.markClicks(), 0);
+  assert.equal(reloaded.nextClicks(), 0);
+});
+
+test('completed infographic prefers its next same-course outline item over a delayed button', async () => {
+  const target = 'https://www.coursera.org/learn/foundations-of-cybersecurity/assignment-submission/cHQzu/test-your-knowledge-core-skills-for-cybersecurity-professionals';
+  const app = runtimeFixture(widgetContext, { widget: infographic({ completed: true, nextOutlineUrl: target }) });
+  await flushRuntime();
+  assert.deepEqual(app.navigationTargets, [target]);
+  assert.equal(app.markClicks(), 0);
+  assert.equal(app.nextClicks(), 0);
+});
+
+test('an inert Mark as completed is not clicked again after reload and eventually reports missing confirmation', async () => {
+  const widget = infographic({ inert: true });
+  const app = runtimeFixture(widgetContext, { widget });
+  await flushRuntime();
+  app.checkNavigation(); await flushRuntime();
+  assert.equal(app.markClicks(), 1);
+  const reloaded = runtimeFixture(widgetContext, { widget, stored: app.storage });
+  await flushRuntime();
+  assert.equal(reloaded.markClicks(), 0);
+  reloaded.advance(31_000); reloaded.checkNavigation(); await flushRuntime();
+  assert.equal(reloaded.nextClicks(), 0);
+  assert.match(reloaded.displayedText(), /не подтвердила отметку/u);
+});
+
+test('marking obeys pause, waits for its button, and stops if the persisted guard cannot be saved', async () => {
+  const paused = runtimeFixture({ ok: true, context: { subjectId: 'owned-widget', enabled: false } }, { widget: infographic() });
+  await flushRuntime();
+  assert.equal(paused.markClicks(), 0);
+  const delayed = runtimeFixture(widgetContext, { widget: infographic({ disabled: true }) });
+  await flushRuntime();
+  assert.equal(delayed.markClicks(), 0);
+  delayed.mark.disabled = false; delayed.checkNavigation(); await flushRuntime();
+  assert.equal(delayed.markClicks(), 1);
+  const widget = infographic({ reply: { ok: true, status: 'working', step: 6 } });
+  const storageFailure = runtimeFixture(widgetContext, { widget });
+  await flushRuntime();
+  storageFailure.failStorageWrites();
+  widget.reply = { ok: true, status: 'complete' };
+  storageFailure.advance(1_000); storageFailure.checkNavigation(); await flushRuntime();
+  assert.equal(storageFailure.markClicks(), 0);
+  assert.match(storageFailure.displayedText(), /защиту от повторной отметки/u);
+});
+
+test('completion is never inferred from unrelated dialogs, an attestation or a missing success icon', async () => {
+  const unknown = runtimeFixture(widgetContext, { widget: infographic({ reply: { ok: true, status: 'manual' } }) });
+  const attestation = runtimeFixture(widgetContext, { widget: infographic(), attestation: true });
+  const unconfirmed = runtimeFixture(widgetContext, { widget: infographic({ noSuccessIcon: true }) });
+  await flushRuntime();
+  assert.equal(unknown.markClicks(), 0);
+  assert.equal(attestation.markClicks(), 0);
+  unconfirmed.checkNavigation(); await flushRuntime();
+  assert.equal(unconfirmed.nextClicks(), 0);
+});
 
 test('automatic quiz submission confirms Ready to submit exactly once and retains the guard after reload', async () => {
   const response = { ok: true, context: { subjectId: 'owned', enabled: true, allowAI: true, autoSubmit: true } };
@@ -315,6 +634,39 @@ test('automatic quiz submission confirms Ready to submit exactly once and retain
   assert.equal(restored.confirmationClicks(), 0);
   assert.equal(restored.submitClicks(), 0);
   assert.equal(restored.messages.filter(({ type }) => type === 'AI_QUIZ').length, 0);
+});
+
+test('live Coursera alertdialog inside the assignment receives exactly one final Submit without another AI request', async () => {
+  const response = { ok: true, context: { subjectId: 'owned', enabled: true, allowAI: true, autoSubmit: true } };
+  const app = runtimeFixture(response, { confirmation: { role: 'alertdialog', inAssignment: true } });
+  await flushRuntime();
+  app.releaseAI();
+  await flushRuntime();
+  assert.equal(app.submitClicks(), 1);
+  assert.equal(app.confirmationClicks(), 1);
+  for (let i = 0; i < 3; i += 1) { app.sample(); await flushRuntime(); }
+  assert.equal(app.confirmationClicks(), 1);
+  assert.equal(app.messages.filter((message) => message.type === 'AI_QUIZ').length, 1);
+  const restored = runtimeFixture(response, { stored: app.storage, selected: true,
+    confirmation: { role: 'alertdialog', inAssignment: true, visible: true } });
+  await flushRuntime();
+  assert.equal(restored.confirmationClicks(), 0);
+  assert.equal(restored.submitClicks(), 0);
+  assert.equal(restored.messages.filter((message) => message.type === 'AI_QUIZ').length, 0);
+});
+
+test('alertdialog support still rejects nonmodal, hidden, unknown and extra-input confirmation windows', async () => {
+  const response = { ok: true, context: { subjectId: 'owned', enabled: true, allowAI: true, autoSubmit: true } };
+  for (const variant of [{ modal: false }, { hidden: true }, { role: 'status' }, { title: 'Accept other terms?' }, { extraInput: true }, { extraText: true }]) {
+    const app = runtimeFixture(response, { confirmation: { role: 'alertdialog', inAssignment: true, ...variant } });
+    await flushRuntime();
+    app.releaseAI();
+    await flushRuntime();
+    app.sample();
+    await flushRuntime();
+    assert.equal(app.submitClicks(), 1);
+    assert.equal(app.confirmationClicks(), 0, JSON.stringify(variant));
+  }
 });
 
 test('submission confirmation waits for availability and does not accept unknown dialog text or controls', async () => {
@@ -489,6 +841,124 @@ test('a grade outside the feedback route cannot complete an active quiz and paus
   await flushRuntime();
   assert.equal(paused.nextClicks(), 0);
   assert.equal(quizCalls(paused), 0);
+});
+
+test('a passed cover status paragraph advances once despite grade, threshold, timestamp and duplicate next buttons', async () => {
+  const app = runtimeFixture({ ok: true, context: { ...skipContext.context, allowAI: true, autoSubmit: true } }, {
+    cover: true, coverResult: {},
+    manual: { url: 'https://www.coursera.org/learn/fixture/assignment-submission/id/test-history', duplicate: true },
+  });
+  await flushRuntime();
+  assert.equal(app.nextClicks(), 1);
+  app.sample(); await flushRuntime();
+  assert.equal(app.nextClicks(), 1);
+  assert.equal(app.launchClicks(), 0);
+  assert.equal(app.submitClicks(), 0);
+  assert.equal(app.markClicks(), 0);
+  assert.equal(quizCalls(app), 0);
+  assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0, 'A confirmed passed result is not a skipped item');
+  assert.ok(app.messages.every((message) => !message.completedCourse), 'A quiz result must not complete the entire course');
+});
+
+test('a failed cover status paragraph is retained as unfinished without reopening an attempt', async () => {
+  const app = runtimeFixture({ ok: true, context: { ...skipContext.context, allowAI: true, autoSubmit: true } }, {
+    cover: true, coverResult: { message: 'You did not pass' },
+    manual: { url: 'https://www.coursera.org/learn/fixture/assignment-submission/id/test-history', duplicate: true },
+  });
+  await flushRuntime();
+  assert.equal(app.nextClicks(), 1);
+  assert.equal(app.launchClicks(), 0);
+  assert.equal(quizCalls(app), 0);
+  assert.equal(app.submitClicks(), 0);
+  assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 1);
+});
+
+test('cover results must be explicit, visible and outside question content', async () => {
+  for (const coverResult of [{ message: 'Grade: 100%' }, { message: 'If you passed, continue' }, { hidden: true }, { inQuestion: true }]) {
+    const app = runtimeFixture({ ok: true, context: { subjectId: 'owned', enabled: true, allowAI: true, autoSubmit: true } }, { cover: true, coverResult });
+    await flushRuntime();
+    assert.equal(app.nextClicks(), 0, JSON.stringify(coverResult));
+    assert.equal(app.submitClicks(), 0);
+    assert.equal(quizCalls(app), 0);
+  }
+});
+
+test('a known timed-attempt dialog cancels then skips without starting a timer or sending answers', async () => {
+  const app = runtimeFixture({ ok: true, context: { ...skipContext.context, allowAI: true, autoSubmit: true } }, {
+    cover: true, timedStart: { visible: true },
+    manual: { url: 'https://www.coursera.org/learn/fixture/assignment-submission/id/graded-exam', duplicate: true },
+  });
+  await flushRuntime();
+  app.sample(); await flushRuntime();
+  assert.equal(app.startContinueClicks(), 0);
+  assert.equal(app.startCancelClicks(), 1);
+  assert.equal(app.launchClicks(), 0);
+  assert.equal(app.nextClicks(), 1);
+  assert.equal(app.submitClicks(), 0);
+  assert.equal(app.markClicks(), 0);
+  assert.equal(quizCalls(app), 0);
+  const records = app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL');
+  assert.equal(records.length, 1);
+  assert.ok(records[0].reason);
+  app.sample(); await flushRuntime();
+  assert.equal(app.startCancelClicks(), 1);
+  assert.equal(app.nextClicks(), 1);
+});
+
+test('timed-attempt cancellation obeys ownership, pause, opt-out, unknown forms and unsent drafts', async () => {
+  const active = { ...skipContext.context, allowAI: true, autoSubmit: true };
+  const exam = { url: 'https://www.coursera.org/learn/fixture/assignment-submission/id/graded-exam' };
+  for (const [context, timedStart, manual] of [
+    [null, { visible: true }, exam],
+    [{ ...active, enabled: false }, { visible: true }, exam],
+    [{ ...active, skipManual: false }, { visible: true }, exam],
+    [active, { visible: true, title: 'Continue to another service?' }, exam],
+    [active, { visible: true, text: 'Start new attempt? I agree to different terms Continue Cancel' }, exam],
+    [active, { visible: true, extraInput: true }, exam],
+    [active, { visible: true, disabled: true }, exam],
+    [active, { visible: true, duplicateCancel: true }, exam],
+    [active, { visible: true }, { ...exam, draft: 'Do not discard my answer' }],
+  ]) {
+    const app = runtimeFixture({ ok: true, context }, { cover: true, timedStart, manual });
+    await flushRuntime(); app.sample(); await flushRuntime();
+    assert.equal(app.startContinueClicks(), 0);
+    assert.equal(app.startCancelClicks(), 0, JSON.stringify({ context, timedStart, manual }));
+    assert.equal(app.nextClicks(), 0);
+    assert.equal(app.submitClicks(), 0);
+    assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0);
+  }
+});
+
+test('an inert timed-dialog Cancel is not repeated and its visible modal prevents navigation', async () => {
+  const app = runtimeFixture({ ok: true, context: { ...skipContext.context, allowAI: true, autoSubmit: true } }, {
+    cover: true, timedStart: { visible: true, inert: true },
+    manual: { url: 'https://www.coursera.org/learn/fixture/assignment-submission/id/graded-exam' },
+  });
+  await flushRuntime(); app.sample(); await flushRuntime();
+  app.advance(21_000); app.sample(); await flushRuntime();
+  assert.equal(app.startCancelClicks(), 1);
+  assert.equal(app.startContinueClicks(), 0);
+  assert.equal(app.nextClicks(), 0);
+  assert.equal(app.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0);
+});
+
+test('pending AI and submitted attempts never cancel a timed dialog or abandon awaiting results', async () => {
+  const response = { ok: true, context: { ...skipContext.context, subjectId: 'owned', allowAI: true, autoSubmit: true } };
+  const pending = runtimeFixture(response, { timedStart: {} });
+  await flushRuntime();
+  pending.showStartDialog(); pending.sample(); await flushRuntime();
+  assert.equal(quizCalls(pending), 1);
+  assert.equal(pending.startCancelClicks(), 0);
+  assert.equal(pending.startContinueClicks(), 0);
+  assert.equal(pending.nextClicks(), 0);
+  const original = await selectedQuizFixture();
+  const submitted = runtimeFixture(response, { cover: true, timedStart: { visible: true }, stored: original.storage });
+  await flushRuntime(); submitted.sample(); await flushRuntime();
+  assert.equal(submitted.startCancelClicks(), 0);
+  assert.equal(submitted.startContinueClicks(), 0);
+  assert.equal(submitted.nextClicks(), 0);
+  assert.equal(quizCalls(submitted), 0);
+  assert.equal(submitted.messages.filter(({ type }) => type === 'CONTENT_SKIP_MANUAL').length, 0);
 });
 
 async function selectedQuizFixture(options = {}, autoSubmit = true, autoHonorCode = false) {

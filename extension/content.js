@@ -179,8 +179,8 @@
     videoFailures: 0, videoRecovery: null,
     observedVideos: new WeakSet(), celebrationClicks: new WeakMap(),
     videoQuestionClicks: new WeakMap(),
-    widgetOpeningSince: null, widgetRetryAt: 0, widgetFailures: 0,
-    reason: '', quizNotice: '', quizFingerprint: null, quizBusy: false, quizLaunch: null, quizLoadingSince: null,
+    widgetOpeningSince: null, widgetRetryAt: 0, widgetFailures: 0, widgetMarkWaitingSince: null,
+    reason: '', manualCode: '', skipBusy: false, quizNotice: '', quizFingerprint: null, quizBusy: false, quizLaunch: null, quizLoadingSince: null, quizStartCancel: null,
     dialogueBusy: false, dialogueCandidate: null, dialogueLoadingSince: null, dialogueBusySince: null, dialogues: new Map(),
     pendingNavigation: null, visited: new Set(), visitedKey: '', attempts: new Map(), widget: null,
   };
@@ -479,11 +479,17 @@
 
   async function tick() {
     const epoch = state.epoch;
-    if (state.tickRunning === epoch) return;
+    if (state.tickRunning === epoch || state.pendingNavigation) return;
     state.tickRunning = epoch;
     try {
       dismissCelebration();
       const page = inspectPage();
+      if (page.kind === 'lab' && !state.reason) setManualReason(page.reason, 'manual');
+      if (state.context?.enabled && state.context.skipManual && (state.manualCode || (page.kind === 'reading' && !state.readingActive))) {
+        if (!state.manualCode) setManualReason('Чтение требует участия человека.', 'manual');
+        if (await skipManualMaterial(page)) return;
+      }
+      if (epoch !== state.epoch || location.href !== state.url) return;
       if (state.reason) page.reason = state.reason;
       const sample = sampleSeconds(page);
       const response = await send({
@@ -501,7 +507,74 @@
 
   function setReason(reason) {
     state.reason = reason;
+    state.manualCode = '';
     renderWidget();
+  }
+
+  function setManualReason(reason, code = 'unsupported') {
+    state.reason = reason;
+    state.manualCode = code;
+    renderWidget();
+  }
+
+  function manualSkipControl() {
+    const available = (element) => !element.disabled && element.getAttribute('aria-disabled') !== 'true' && !element.closest('form');
+    const links = visibleElements('a[href]').filter((anchor) => isLessonLink(anchor) && new URL(anchor.href).protocol === 'https:' && available(anchor));
+    const current = links.filter((anchor) => normalizedUrl(anchor.href) === normalizedUrl(location.href));
+    if (current.length === 1) {
+      const outline = current[0].closest('aside,nav,[data-testid="course-outline"],[aria-label="Course outline"]') || current[0].closest('ul,ol');
+      const next = outline && links.slice(links.indexOf(current[0]) + 1).find((anchor) =>
+        outline.contains(anchor) && !state.visited.has(normalizedUrl(anchor.href)));
+      if (next) return next;
+    }
+    const controls = visibleElements('a[href],button', mainArea()).filter((element) => available(element) && NEXT.test(label(element)) &&
+      (element.matches('a[href]') ? links.includes(element) && normalizedUrl(element.href) !== normalizedUrl(location.href) &&
+        !state.visited.has(normalizedUrl(element.href)) : element.type === 'button'));
+    if (controls.length === 1) return controls[0];
+    return controls.length > 1 && controls.every((control) => control.matches('button') && label(control) === label(controls[0])) ? controls[0] : null;
+  }
+
+  function manualSkipSafe(page) {
+    if (!['lab', 'reading', 'quiz', 'dialogue', 'widget'].includes(page.kind) || state.quizBusy || state.dialogueBusy || state.pendingNavigation) return false;
+    if (visibleElements('[role="dialog"][aria-modal="true"],[role="alertdialog"][aria-modal="true"]').length) return false;
+    if (visibleElements('textarea,input[type="text"],[contenteditable="true"]', mainArea()).some((input) => clean(input.value || text(input)))) return false;
+    if (page.kind === 'quiz' && ['pending', 'submitted'].includes(currentQuizAttempt()?.attempt?.status) &&
+      !(state.manualCode === 'failed' && quizResults().includes('failed'))) return false;
+    if (page.kind === 'dialogue' && readDialogue().pending) return false;
+    return true;
+  }
+
+  async function skipManualMaterial(page) {
+    if (!state.context?.enabled || !state.context.skipManual || !state.manualCode || state.skipBusy) return false;
+    if (!manualSkipSafe(page)) { setReason(`${state.reason} Автопропуск остановлен: открыто окно, есть черновик или ожидается результат.`); return false; }
+    const control = manualSkipControl();
+    if (!control) { setReason(`${state.reason} Следующий материал не найден; автоматического перехода нет.`); return false; }
+    const key = `coursepilot:skip:${state.context.subjectId}:${accountKey() || ''}:${normalizedUrl(location.href)}`;
+    try {
+      if (sessionStorage.getItem(key)) { setReason('Переход с этого ручного материала уже запрашивался. Повторный клик не выполняется.'); return false; }
+    } catch { setReason('Не удалось проверить защиту от повторного пропуска. Переход не выполнен.'); return false; }
+    const epoch = state.epoch;
+    const url = location.href;
+    const code = state.manualCode;
+    const request = { epoch };
+    state.skipBusy = request;
+    try {
+      const response = await send({ type: 'CONTENT_SKIP_MANUAL', url, accountKey: accountKey(), code, reason: state.reason, itemTitle: page.itemTitle });
+      if (epoch !== state.epoch || url !== location.href) return false;
+      updateContext(response);
+      if (!response.ok || !state.context?.enabled || !state.context.skipManual || !manualSkipSafe(inspectPage()) || manualSkipControl() !== control) {
+        setReason(response.error || 'Автопропуск отменён: состояние страницы или предмета изменилось.');
+        return false;
+      }
+      try { sessionStorage.setItem(key, 'requested'); }
+      catch { setReason('Не удалось сохранить защиту от повторного пропуска. Переход не выполнен.'); return false; }
+      state.reason = ''; state.manualCode = ''; state.quizNotice = 'Ручной материал сохранён в списке незавершённых. Переход к следующему…';
+      if (control.matches('a[href]')) return navigate(control.href);
+      state.pendingNavigation = { target: null, since: Date.now() };
+      state.visited.add(normalizedUrl(location.href)); saveVisited();
+      control.click();
+      return true;
+    } finally { if (state.skipBusy === request) state.skipBusy = false; }
   }
 
   function normalizedUrl(href) {
@@ -690,9 +763,14 @@
     if (!state.context?.enabled || state.driveRunning === epoch || state.pendingNavigation) return;
     state.driveRunning = epoch;
     try {
+      if (state.manualCode && state.context.skipManual) {
+        await skipManualMaterial(page);
+        return;
+      }
       if (dismissCelebration()) return;
       if (page.kind === 'video' && skipVideoQuestion()) return;
-      if (['login', 'challenge', 'lab', 'unknown'].includes(page.kind)) {
+      if (page.kind === 'lab') setManualReason(page.reason, 'manual');
+      else if (['login', 'challenge', 'unknown'].includes(page.kind)) {
         setReason(page.reason || 'Для этого материала требуется действие на странице.');
       } else if (page.kind === 'program') {
         if (!page.courses.length) setReason('Не найден надёжно распознаваемый список курсов программы. Добавьте ссылки её курсов в панели расширения.');
@@ -701,12 +779,30 @@
       else if (page.kind === 'quiz') await runQuiz();
       else if (page.kind === 'dialogue') await runDialogue();
       else if (page.kind === 'widget') await runWidget();
+      else if (page.kind === 'reading' && state.context.skipManual && !state.readingActive) setManualReason('Чтение требует участия человека.', 'manual');
       else if (page.kind === 'reading') state.reason = '';
+      if (state.manualCode) await skipManualMaterial(page);
     } finally { if (state.driveRunning === epoch) state.driveRunning = null; }
   }
 
   async function runWidget() {
     if (state.reason || Date.now() < state.widgetRetryAt) return;
+    const key = `coursepilot:widget:${fingerprint(`${state.context.subjectId}|${accountKey() || ''}|${normalizedUrl(location.href)}`)}`;
+    if (widgetCompletionObserved()) {
+      if (readAttempt(`${key}:next`) !== 'advanced' && nextWidgetMaterial()) saveAttempt(`${key}:next`, 'advanced');
+      return;
+    }
+    const storedMark = readAttempt(`${key}:marked`);
+    const markedAt = Number(storedMark);
+    if (storedMark != null && (!Number.isFinite(markedAt) || markedAt <= 0)) {
+      setReason('Сохранённая отметка материала повреждена. Проверьте его состояние вручную; повторный клик не выполняется.');
+      return;
+    }
+    if (markedAt > 0) {
+      state.quizNotice = 'Mark as completed нажата. Ожидаю подтверждение Coursera…';
+      if (Date.now() - markedAt > 30_000) setReason('Coursera не подтвердила отметку материала. Проверьте страницу; повторная отметка не выполняется.');
+      return;
+    }
     state.widgetOpeningSince ??= Date.now();
     const frames = visibleElements('iframe[data-testid="widget-iframe"]', mainArea())
       .filter((frame) => frame.getAttribute('src') === WIDGET_SOURCE);
@@ -717,16 +813,21 @@
     const epoch = state.epoch;
     const response = await send({ type: 'CONTENT_WIDGET_CONTINUE', url: location.href, accountKey: accountKey() });
     if (epoch !== state.epoch || location.href !== state.url || !state.context?.enabled) return;
-    if (response?.ok && response.status === 'opened') {
-      setReason('Вводная кнопка Continue нажата. Открыта интерактивная инфографика: изучите её метки и завершите материал вручную. Один Continue не означает завершение задания.');
+    if (response?.ok && response.status === 'complete') {
+      markWidgetComplete(key);
       return;
     }
     if (response?.ok && response.status === 'manual') {
-      setReason('В инфографике уже открыты интерактивные элементы. Продолжите работу вручную; повторный Continue не требуется.');
+      setManualReason('Формат инфографики изменился или открыт неизвестный диалог. Автоматическая отметка завершения не выполнена.');
       return;
     }
-    if (response?.ok && response.status === 'clicked') {
+    if (response?.ok && response.status === 'working') {
+      state.widgetFailures = 0;
+      state.quizNotice = Number.isInteger(response.step) && response.step >= 1 && response.step <= 6
+        ? `Инфографика: шаг ${response.step} из 6. Раскрываю метки и продолжаю автоматически…`
+        : 'Открываю инфографику автоматически…';
       state.widgetRetryAt = Date.now() + 1_000;
+      renderWidget();
       return;
     }
     if (response?.status === 'disabled') {
@@ -738,6 +839,47 @@
     if (state.widgetFailures > 2) {
       setReason('Не удалось открыть инфографику после двух повторов. Проверьте доступ расширения к её iframe или нажмите Continue вручную.');
     } else state.widgetRetryAt = Date.now() + VIDEO_RETRY_MS * state.widgetFailures;
+  }
+
+  function widgetCompletionObserved() {
+    return visibleElements('a[href]').some((anchor) => {
+      try {
+        return normalizedUrl(anchor.href) === normalizedUrl(location.href) && completionMark(anchor) === 2 &&
+          anchor.querySelector('[data-testid="learn-item-success-icon"]');
+      } catch { return false; }
+    });
+  }
+
+  function nextWidgetMaterial() {
+    const links = visibleElements('a[href]').filter(isLessonLink);
+    const current = links.filter((anchor) => normalizedUrl(anchor.href) === normalizedUrl(location.href));
+    if (current.length === 1) {
+      const next = links[links.indexOf(current[0]) + 1];
+      if (next && navigate(next.href)) return true;
+    }
+    return nextMaterial();
+  }
+
+  function markWidgetComplete(key) {
+    state.widgetMarkWaitingSince ??= Date.now();
+    const buttons = visibleElements('button[data-testid="mark-complete"]', mainArea())
+      .filter((button) => label(button) === 'Mark as completed');
+    state.quizNotice = 'Инфографика завершена. Ожидаю кнопку Mark as completed…';
+    if (hasUncheckedAttestation()) {
+      setManualReason('Перед отметкой материала требуется отдельное подтверждение. Автоматическая отметка остановлена.', 'confirmation');
+      return;
+    }
+    if (buttons.length !== 1 || buttons[0].disabled || buttons[0].getAttribute('aria-disabled') === 'true') {
+      if (Date.now() - state.widgetMarkWaitingSince > 30_000) setReason('Кнопка Mark as completed не стала доступна. Проверьте страницу Coursera.');
+      return;
+    }
+    if (!saveAttempt(`${key}:marked`, String(Date.now()))) {
+      setReason('Не удалось сохранить защиту от повторной отметки материала. Mark as completed не нажата.');
+      return;
+    }
+    buttons[0].click();
+    state.quizNotice = 'Mark as completed нажата. Ожидаю подтверждение Coursera…';
+    renderWidget();
   }
 
   function inputText(input) {
@@ -912,7 +1054,7 @@
   }
 
   function quizSubmissionDialog() {
-    const matches = visibleElements('[role="dialog"][aria-modal="true"]').filter((dialog) => {
+    const matches = visibleElements('[role="dialog"][aria-modal="true"],[role="alertdialog"][aria-modal="true"]').filter((dialog) => {
       const headings = visibleElements('h1,h2,h3,[role="heading"]', dialog);
       if (headings.length !== 1 || text(headings[0], 100) !== 'Ready to submit?') return false;
       if (!/^Ready to submit\? (?:Submit Cancel|Cancel Submit)$/u.test(text(dialog, 1_000))) return false;
@@ -980,11 +1122,16 @@
         saveQuizAttempt(key, attempt);
       }
       state.quizNotice = 'Ответы ИИ выбраны. Проверьте их и отправьте тест на Coursera; автоотправка выключена.';
+      if (state.context.skipManual) setManualReason(state.quizNotice, 'confirmation');
       return;
     }
     const attestations = uncheckedAttestations();
     if (attestations.length) {
       if (acknowledgeHonorCode(key, attempt, attestations)) return;
+      if (state.context.skipManual && !attempt.honorCodeAttempted) {
+        setManualReason('Перед отправкой теста требуется отдельное подтверждение.', 'confirmation');
+        return;
+      }
       waitForQuiz(key, attempt,
         attempt.honorCodeAttempted ? 'Автогалочка уже была запрошена. Проверьте подтверждение вручную; повторный клик не выполняется.' :
           'Требуется ваше подтверждение на странице. Автогалочка Honor Code выключена или форма не распознана; другие соглашения отмечаются вручную.',
@@ -1039,6 +1186,10 @@
     const outcomes = visibleElements('h1,h2,[role="status"]', area)
       .filter(outsideQuestions)
       .map((element) => quizOutcome(text(element, 300)));
+    for (const status of visibleElements('[role="status"]', area).filter(outsideQuestions)) {
+      outcomes.push(...visibleElements('p,h1,h2,h3,[role="heading"]', status).filter(outsideQuestions)
+        .map((element) => quizOutcome(text(element, 300))));
+    }
     if (!/\/view-feedback\/?$/iu.test(location.pathname)) return outcomes;
     for (const banner of visibleElements('[data-testid="AssignmentViewTopBanner"]', area).filter(outsideQuestions)) {
       if (!isVisible(banner.closest('[role="alert"]'))) continue;
@@ -1052,7 +1203,7 @@
     if (state.quizBusy) return;
     const outcome = quizResults();
     if (outcome.includes('failed')) {
-      setReason('Coursera сообщает, что тест не пройден. Проверьте ответы и доступность новой попытки.');
+      setManualReason('Coursera сообщает, что тест не пройден. Требуется проверка ответов.', 'failed');
       return;
     }
     if (outcome.includes('passed')) {
@@ -1065,9 +1216,14 @@
       setReason('Открыта страница результатов, но итог теста не распознан. Проверьте оценку и проходной балл; новая попытка и запрос ИИ не запускаются.');
       return;
     }
+    if (skipQuizStartConfirmation()) return;
     const active = currentQuizAttempt();
     if (active?.attempt?.status === 'submitted') {
       waitForQuizResult(active.key, active.attempt);
+      return;
+    }
+    if (state.context.skipManual && (!state.context.allowAI || !state.context.autoSubmit) && !active) {
+      setManualReason('Автоматическое прохождение теста выключено. Требуется ручное завершение.', 'ai-disabled');
       return;
     }
     const extracted = extractQuiz();
@@ -1077,7 +1233,7 @@
     }
     if (!extracted && openQuizAttempt()) return;
     if (!state.context.allowAI) {
-      setReason('Для теста ИИ выключен или недоступен. Пройдите тест вручную; остальные предметы могут продолжаться.');
+      setManualReason('Для теста ИИ выключен или недоступен. Требуется ручное завершение.', 'ai-disabled');
       return;
     }
     if (!extracted) {
@@ -1086,7 +1242,7 @@
         state.quizNotice = 'Ожидание загрузки вопросов…';
         return;
       }
-      setReason('Этот формат теста не поддержан. Пройдите его вручную и откройте следующий материал.');
+      setManualReason('Этот формат теста не поддержан. Требуется ручное завершение.');
       return;
     }
     state.quizLoadingSince = null;
@@ -1138,7 +1294,7 @@
   function openQuizAttempt() {
     if (state.quizLaunch) {
       if (Date.now() - state.quizLaunch < 20_000) return true;
-      setReason('Попытка не открылась или её формат не распознан. Нажмите Resume assignment вручную и возобновите предмет.');
+      setManualReason('Попытка не открылась или её формат не распознан. Требуется ручное завершение.');
       return true;
     }
     const control = visibleElements('button,a[href]', mainArea())
@@ -1156,6 +1312,35 @@
     return true;
   }
 
+  function skipQuizStartConfirmation() {
+    if (!state.context?.enabled || !state.context.skipManual || currentQuizAttempt()?.attempt) return false;
+    if (state.quizStartCancel) {
+      if (isVisible(state.quizStartCancel.dialog)) {
+        if (Date.now() - state.quizStartCancel.since > 20_000) setReason('Окно запуска попытки не закрылось после Cancel. Новая попытка не запускается.');
+        else state.quizNotice = 'Закрываю окно запуска попытки без её расходования…';
+      } else {
+        resetQuizLaunch(state);
+        setManualReason('Запуск новой попытки отменён. Задание оставлено для ручного прохождения.', 'confirmation');
+      }
+      return true;
+    }
+    const dialogs = visibleElements('[role="dialog"][aria-modal="true"],[role="alertdialog"][aria-modal="true"]');
+    if (dialogs.length !== 1) return false;
+    const dialog = dialogs[0];
+    const headings = visibleElements('h1,h2,h3,[role="heading"]', dialog);
+    if (headings.length !== 1 || text(headings[0], 100) !== 'Start new attempt?' ||
+      !/\bYou have .{1,80} to submit this attempt\./u.test(text(dialog, 1_000)) ||
+      visibleElements('input,textarea,[contenteditable="true"]', dialog).length ||
+      visibleElements('textarea,input[type="text"],[contenteditable="true"]', mainArea()).some((input) => clean(input.value || text(input)))) return false;
+    const buttons = visibleElements('button', dialog);
+    const cancel = buttons.filter((button) => label(button) === 'Cancel');
+    if (buttons.length !== 2 || cancel.length !== 1 || !buttons.some((button) => label(button) === 'Continue') ||
+      cancel[0].type !== 'button' || cancel[0].closest('form') || cancel[0].disabled || cancel[0].getAttribute('aria-disabled') === 'true') return false;
+    state.quizStartCancel = { dialog, since: Date.now() };
+    cancel[0].click();
+    return skipQuizStartConfirmation();
+  }
+
   function dialogueStoreKey() {
     return `${DIALOGUE_PREFIX}${fingerprint(`${state.context?.subjectId || ''}|${accountKey() || ''}|${normalizedUrl(location.href)}`)}`;
   }
@@ -1168,7 +1353,8 @@
     let corrupt = false;
     try { raw = sessionStorage.getItem(key); record = raw ? JSON.parse(raw) : null; } catch { corrupt = true; }
     if (raw != null && (!record || !Array.isArray(record.history) || !Array.isArray(record.sent) || !Number.isInteger(record.turns) || record.turns < 0 || record.turns > 30 ||
-      (record.pending && (!['pending', 'sent', 'failed'].includes(record.pending.status) || typeof record.pending.key !== 'string' || !Number.isFinite(record.pending.at))))) corrupt = true;
+      (record.pending && (!['pending', 'sent', 'failed'].includes(record.pending.status) || typeof record.pending.key !== 'string' || !Number.isFinite(record.pending.at))) ||
+      (record.launchAt != null && (!Number.isFinite(record.launchAt) || record.launchAt <= 0)))) corrupt = true;
     if (corrupt || !record) record = { history: [], sent: [], turns: corrupt ? 30 : 0, pending: null, corrupt };
     record.history = record.history.filter((item) => typeof item?.prompt === 'string' && typeof item.reply === 'string')
       .slice(-6).map((item) => ({ prompt: item.prompt.slice(0, 6_000), reply: item.reply.slice(0, 3_000) }));
@@ -1333,7 +1519,7 @@
     }
     if (current.input.value.trim()) { setReason('В Coach есть ваш черновик. Автоответ остановлен, текст не изменён.'); return false; }
     if (record.sent.includes(current.key)) { setReason('Coach повторил уже обработанный вопрос. Диалог остановлен, чтобы не отправлять дубликат.'); return false; }
-    if (record.turns >= dialogueLimit(state.context.dialogueMaxTurns)) { setReason('Достигнут лимит автоответов в этом диалоге. Продолжите вручную или увеличьте лимит и возобновите предмет.'); return false; }
+    if (record.turns >= dialogueLimit(state.context.dialogueMaxTurns)) { setManualReason('Достигнут лимит автоответов в этом диалоге. Продолжите вручную или увеличьте лимит и возобновите предмет.', 'limit'); return false; }
     if (record.pending && record.pending.status !== 'sent') {
       setReason('Предыдущий автоответ был прерван или не отправлен. Проверьте поле и нажмите «Повторить ИИ».');
       return false;
@@ -1346,17 +1532,55 @@
     return Date.now() - state.dialogueCandidate.since >= DIALOGUE_STABLE_MS;
   }
 
+  function waitForDialogueStart(since, disabled = false) {
+    if (Date.now() - since > DIALOGUE_WAIT_MS) {
+      setReason(disabled ? 'Кнопка Start Dialogue не стала доступна за 2 минуты. Проверьте Coach вручную.' :
+        'Coach не запустил диалог за 2 минуты. Повторный запуск не выполняется; проверьте страницу вручную.');
+    } else state.quizNotice = disabled ? 'Ожидание доступной кнопки Start Dialogue…' : 'Start Dialogue нажата. Ожидание первого сообщения Coach…';
+    return true;
+  }
+
+  function startDialogue(record) {
+    if (record.launchAt) return waitForDialogueStart(record.launchAt);
+    const area = document.querySelector('[data-testid="dialogue-content"]');
+    const coach = area?.querySelector('[data-testid="coursera-coach-item"]');
+    if (!isVisible(area) || !isVisible(coach) || visibleElements('textarea[aria-label="Send a message"]', coach).length) return false;
+    const buttons = visibleElements('button', coach).filter((button) => label(button) === 'Start Dialogue' &&
+      !button.closest('[data-testid="ai-coach-chat-messages"]'));
+    if (!buttons.length) return false;
+    if (record.corrupt) { setReason('История запуска Coach повреждена. Диалог не запускается повторно; проверьте страницу вручную.'); return true; }
+    if (record.turns || record.sent.length || record.history.length || record.pending) {
+      setReason('В Coach уже есть история ответов. Новый диалог автоматически не создаётся.');
+      return true;
+    }
+    if (buttons.length !== 1 || buttons[0].type !== 'button' || buttons[0].closest('form') || hasUncheckedAttestation() ||
+      visibleElements('[role="dialog"][aria-modal="true"],[role="alertdialog"][aria-modal="true"]').length) {
+      setManualReason('Начальный экран Coach требует проверки или отдельного подтверждения. Start Dialogue не нажата.', 'confirmation');
+      return true;
+    }
+    if (buttons[0].disabled || buttons[0].getAttribute('aria-disabled') === 'true') {
+      state.dialogueLoadingSince ??= Date.now();
+      return waitForDialogueStart(state.dialogueLoadingSince, true);
+    }
+    record.launchAt = Date.now();
+    if (!saveDialogue(record)) { setReason('Не удалось сохранить защиту от повторного запуска Coach. Start Dialogue не нажата.'); return true; }
+    buttons[0].click();
+    state.dialogueLoadingSince = null;
+    return waitForDialogueStart(record.launchAt);
+  }
+
   async function runDialogue() {
     if (state.dialogueBusy || !state.context?.enabled) return;
     if (hasDialogueCompletion()) { state.reason = ''; nextMaterial(); return; }
     if (!state.context.allowAI || !state.context.autoDialogue) {
-      setReason('Автоответы Coach выключены. Включите ИИ и «Автоответы в диалогах Coach» в настройках, затем возобновите предмет.');
+      setManualReason('Автоответы Coach выключены. Включите ИИ и автоответы либо завершите диалог вручную.', 'ai-disabled');
       return;
     }
     const current = extractDialogue();
     if (!current) {
+      if (startDialogue(readDialogue())) return;
       state.dialogueLoadingSince ??= Date.now();
-      if (Date.now() - state.dialogueLoadingSince > 20_000) setReason('Форма диалога Coach не распознана. Продолжите вручную; другие предметы могут работать.');
+      if (Date.now() - state.dialogueLoadingSince > 20_000) setManualReason('Форма диалога Coach не распознана. Требуется ручное завершение.');
       else state.quizNotice = 'Ожидание загрузки диалога Coach…';
       return;
     }
@@ -1412,6 +1636,7 @@
       state.reason = '';
       state.quizNotice = '';
       resetQuizLaunch(state);
+      state.manualCode = '';
       if (dialogue) {
         const record = readDialogue();
         if (record.pending?.status !== 'sent') record.pending = null;
@@ -1473,11 +1698,13 @@
     state.widgetOpeningSince = null;
     state.widgetRetryAt = 0;
     state.widgetFailures = 0;
+    state.widgetMarkWaitingSince = null;
     state.video = null;
     state.url = location.href;
     state.context = null;
     state.pendingNavigation = null;
     state.reason = '';
+    state.manualCode = ''; state.skipBusy = false;
     state.quizNotice = '';
     state.quizFingerprint = null;
     state.quizBusy = false;
@@ -1486,6 +1713,7 @@
     state.dialogueLoadingSince = null;
     state.dialogueBusySince = null;
     resetQuizLaunch(state);
+    state.quizStartCancel = null;
     state.previousClock = null;
     state.previousVideo = null;
     state.readingActive = false;
@@ -1520,12 +1748,14 @@
     respond({ ok: true, page: inspectPage() });
     if (message.action === 'run') {
       state.reason = '';
+      state.manualCode = '';
       if (message.explicit === true) {
         resetQuizLaunch(state);
         resetVideoWait();
         state.widgetOpeningSince = null;
         state.widgetRetryAt = 0;
         state.widgetFailures = 0;
+        state.widgetMarkWaitingSince = null;
       }
       queueMicrotask(() => { void hello().then(tick); });
     } else if (message.action === 'next') queueMicrotask(() => nextMaterial(true));

@@ -1,6 +1,6 @@
 {
   "name": "coursepilot",
-  "version": "0.2.6",
+  "version": "0.2.10",
   "private": true,
   "type": "module",
   "scripts": {

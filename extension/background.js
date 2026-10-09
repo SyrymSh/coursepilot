@@ -81,7 +81,7 @@ function activeIds(state) {
 
 function context(state, subject) {
   if (!subject) return null;
-  return { subjectId: subject.id, enabled: activeIds(state).has(subject.id), manualReading: false,
+  return { subjectId: subject.id, enabled: activeIds(state).has(subject.id), manualReading: false, skipManual: state.settings.skipManual === true,
     canRetryAI: state.settings.ai.enabled && ['running', 'blocked'].includes(subject.status),
     allowAI: state.settings.ai.enabled, autoSubmit: state.settings.ai.autoSubmit, autoHonorCode: state.settings.ai.autoHonorCode === true,
     autoDialogue: state.settings.ai.autoDialogue, dialogueMaxTurns: state.settings.ai.dialogueMaxTurns };
@@ -281,6 +281,22 @@ async function contentMessage(message, sender) {
   if (context(state, subject)?.enabled && !(await updateManagedTab(state, subject)).ok) {
     await save(state);
     return { ok: true, context: context(state, subject) };
+  }
+  if (message.type === 'CONTENT_SKIP_MANUAL') {
+    const currentContext = context(state, subject);
+    if (!currentContext?.enabled || !currentContext.skipManual) return fail('Автопропуск сейчас выключен или предмет приостановлен.');
+    const kind = new URL(message.url).pathname.match(/^\/learn\/[^/]+\/(supplement|reading|coach|quiz|exam|assignment-submission|ungradedWidget|ungradedLab|gradedProgramming|programming|peer|lab|assignment)\/[^/]+(?:\/|$)/iu)?.[1].toLowerCase();
+    const allowed = ['manual', 'ai-disabled', 'unsupported', 'confirmation', 'limit', 'failed'];
+    if (!kind || !allowed.includes(message.code) || typeof message.reason !== 'string' || !message.reason.trim()) return fail('Этот материал нельзя автоматически пропустить.');
+    const url = new URL(message.url); url.search = ''; url.hash = '';
+    const items = Array.isArray(subject.skippedItems) ? subject.skippedItems : [];
+    if (!items.some((item) => item.url === url.href)) {
+      if (items.length >= 500) return fail('Список ручных материалов заполнен. Проверьте предмет.');
+      subject.skippedItems = [...items, { url: url.href, title: String(message.itemTitle || 'Материал').slice(0, 180), reason: message.reason.slice(0, 350), at: now() }];
+      addLog(state, subject.id, `Пропуск без отметки завершения: ${String(message.itemTitle || 'Материал').slice(0, 100)}. ${message.reason}`);
+    }
+    await save(state);
+    return { ok: true, context: currentContext };
   }
   if (message.type === 'CONTENT_SAMPLE') {
     subject = await activitySample(state, subject, message, sender);
@@ -483,7 +499,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const internal = sender.id === chrome.runtime.id && sender.url?.startsWith(chrome.runtime.getURL(''));
   let task;
   if (Object.hasOwn(AI_TASKS, message.type)) task = runAi(message, sender);
-  else if (['CONTENT_HELLO', 'CONTENT_SAMPLE', 'CONTENT_RETRY_QUIZ', 'CONTENT_RETRY_DIALOGUE', 'CONTENT_WIDGET_CONTINUE'].includes(message.type)) task = serial(() => contentMessage(message, sender));
+  else if (['CONTENT_HELLO', 'CONTENT_SAMPLE', 'CONTENT_RETRY_QUIZ', 'CONTENT_RETRY_DIALOGUE', 'CONTENT_WIDGET_CONTINUE', 'CONTENT_SKIP_MANUAL'].includes(message.type)) task = serial(() => contentMessage(message, sender));
   else if (internal) task = serial(() => internalMessage(message));
   else { sendResponse(fail('Сообщение не разрешено.')); return false; }
   task.then(sendResponse).catch(() => sendResponse(fail('Не удалось выполнить действие. Откройте панель и повторите.')));

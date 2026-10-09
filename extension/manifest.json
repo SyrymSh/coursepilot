@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CoursePilot — 50 часов / 25 дней",
-  "version": "0.2.6",
+  "version": "0.2.10",
   "description": "Параллельные планы Coursera: общий бюджет предмета, реальные часы активности и необязательный ИИ.",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "alarms", "sidePanel"],

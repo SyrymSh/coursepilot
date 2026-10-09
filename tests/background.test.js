@@ -189,6 +189,60 @@ test('widget Continue is relayed only for an enabled owned top-level Coursera ac
   assert.equal(relays(), 1);
 });
 
+test('manual skip persists one unfinished item and journal entry without altering time, grade or course status', async (t) => {
+  const app = await fixture(t);
+  const url = 'https://www.coursera.org/learn/course-1/lab/manual/lesson';
+  app.patchTab(1, { url });
+  const message = { type: 'CONTENT_SKIP_MANUAL', url, code: 'manual', itemTitle: 'Lab', reason: 'Requires separate work.' };
+  const sender = app.sender(1, { url });
+  const before = app.state().subjects;
+  assert.equal((await app.send(message, sender)).context.skipManual, true);
+  assert.equal((await app.send(message, sender)).ok, true);
+  const after = app.state();
+  assert.equal(after.subjects[0].status, 'running');
+  assert.equal(after.subjects[0].elapsedSeconds, before[0].elapsedSeconds);
+  assert.deepEqual(after.subjects[0].courses, before[0].courses);
+  assert.deepEqual(after.subjects[1], before[1]);
+  assert.equal(after.subjects[0].skippedItems.length, 1);
+  assert.equal(after.subjects[0].skippedItems[0].url, url);
+  assert.equal(after.logs.filter(({ message }) => message.startsWith('Пропуск без отметки')).length, 1);
+  const exported = await app.send({ type: 'EXPORT_DATA' });
+  assert.equal(exported.data.subjects[0].skippedItems.length, 1);
+});
+
+test('manual skip denies foreign frames, stale routes, protected pages, disabled settings and paused subjects', async (t) => {
+  const app = await fixture(t);
+  const url = 'https://www.coursera.org/learn/course-1/coach/manual/lesson';
+  app.patchTab(1, { url });
+  const message = { type: 'CONTENT_SKIP_MANUAL', url, code: 'unsupported', itemTitle: 'Coach', reason: 'Unsupported format.' };
+  const sender = app.sender(1, { url });
+  for (const patch of [{ id: 'foreign-extension' }, { frameId: 2 }, { url: 'https://evil.test/learn/course-1/coach/manual' }]) {
+    assert.equal((await app.send(message, { ...sender, ...patch })).context, null);
+  }
+  assert.equal((await app.send({ ...message, code: 'arbitrary' }, sender)).ok, false);
+  for (const route of ['home', 'lecture/video', 'login', 'challenge/captcha']) {
+    const otherUrl = `https://www.coursera.org/learn/course-1/${route}`;
+    app.patchTab(1, { url: otherUrl });
+    assert.equal((await app.send({ ...message, url: otherUrl }, app.sender(1, { url: otherUrl }))).ok, false);
+  }
+  app.patchTab(1, { url });
+  const settings = { ...app.state().settings, skipManual: false };
+  assert.equal((await app.send({ type: 'UPDATE_SETTINGS', settings })).ok, true);
+  assert.equal((await app.send(message, sender)).ok, false);
+  await app.send({ type: 'UPDATE_SETTINGS', settings: { ...settings, skipManual: true } });
+  await app.send({ type: 'SUBJECT_ACTION', id: app.state().subjects[0].id, action: 'pause' });
+  assert.equal((await app.send(message, sender)).ok, false);
+  assert.equal(app.state().subjects[0].skippedItems, undefined);
+});
+
+test('manual skip defaults migrate older settings but an explicit opt-out survives an extension update', async (t) => {
+  const app = await fixture(t, (state) => { delete state.settings.skipManual; });
+  assert.equal((await app.sample(1)).context.skipManual, true);
+  await app.send({ type: 'UPDATE_SETTINGS', settings: { ...app.state().settings, skipManual: false } });
+  await app.installed();
+  assert.equal((await app.sample(1)).context.skipManual, false);
+});
+
 test('unauthorized control messages and untracked content frames cannot mutate state', async (t) => {
   const app = await fixture(t);
   const before = app.state();

@@ -11,7 +11,7 @@ const COACH_URL = 'https://www.coursera.org/learn/fixture/coach/task/conversatio
 const STORE_KEY = `coursepilot:dialogue:${fingerprint(`owned||${COACH_URL}`)}`;
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function coachFixture({ context = {}, prompts = ['What is phishing?'], draft = '', storage = new Map(), busy = false, actionsReady = true, completion = null } = {}) {
+function coachFixture({ context = {}, prompts = ['What is phishing?'], draft = '', storage = new Map(), busy = false, actionsReady = true, completion = null, start = null } = {}) {
   const created = [];
   function element(tag = 'div', content = '') {
     const attributes = new Map();
@@ -33,7 +33,17 @@ function coachFixture({ context = {}, prompts = ['What is phishing?'], draft = '
   }
   const input = Object.assign(new TextArea(), element('textarea'), { disabled: false, readOnly: false });
   input.value = draft;
-  input.hidden = Boolean(completion && !completion.composer);
+  let introVisible = Boolean(start);
+  input.hidden = introVisible || Boolean(completion && !completion.composer);
+  let startClicks = 0;
+  const openConversation = () => { introVisible = false; input.hidden = false; };
+  const startButton = Object.assign(element('button', start?.label ?? 'Start Dialogue'), {
+    type: start?.type ?? 'button', disabled: start?.disabled === true,
+    closest: (selector) => start?.inHistory && selector.includes('ai-coach-chat-messages') ? element('history') :
+      start?.inForm && selector.includes('form') ? element('form') : null,
+    click() { startClicks += 1; if (!start?.inert) openConversation(); },
+  });
+  startButton.hidden = start?.hidden === true;
   const sent = [];
   const sendButton = Object.assign(element('button', 'Send message'), {
     disabled: false, click() { sent.push(input.value); input.value = ''; },
@@ -52,7 +62,13 @@ function coachFixture({ context = {}, prompts = ['What is phishing?'], draft = '
   prompts.forEach(addPrompt);
   const coach = element('div');
   coach.querySelector = (selector) => selector.includes('Chat message composer') ? composer : null;
-  coach.querySelectorAll = (selector) => selector === '[data-testid="chat-message-llm"]' ? messages : selector.includes('typing-indicator') && busy ? [toolbar] : [];
+  coach.querySelectorAll = (selector) => {
+    if (selector === '[data-testid="chat-message-llm"]') return messages;
+    if (selector.includes('typing-indicator') && busy) return [toolbar];
+    if (selector === 'textarea[aria-label="Send a message"]') return [input];
+    if (selector === 'button' && introVisible) return start?.duplicate ? [startButton, startButton] : [startButton];
+    return [];
+  };
   const area = element('section');
   area.querySelector = (selector) => selector.includes('coursera-coach-item') ? coach : selector === 'h1,h2' ? heading : null;
   const ended = element('div', completion?.message ?? 'The Dialogue has ended. Start a new chat to clear your chat history and start fresh.');
@@ -78,12 +94,15 @@ function coachFixture({ context = {}, prompts = ['What is phishing?'], draft = '
     return [];
   };
   const main = element('main');
-  main.querySelectorAll = (selector) => selector === 'h1' ? [heading] : selector === 'a[href],button' && completion ? [retryButton, nextButton] : [];
+  const attestation = Object.assign(element('input'), { type: 'checkbox', checked: false, disabled: false,
+    labels: [element('label', 'I agree to other terms')] });
+  main.querySelectorAll = (selector) => selector === 'h1' ? [heading] : selector === 'a[href],button' && completion ? [retryButton, nextButton] :
+    selector === 'input[type="checkbox"]' && start?.attestation ? [attestation] : [];
   const document = {
     title: 'Coach fixture', body: main, documentElement: element('html'), visibilityState: 'visible',
     hasFocus: () => true, getElementById: () => null, addEventListener: () => {}, createElement: element,
     querySelector: (selector) => selector.includes('dialogue-content') ? area : selector === 'main,[role="main"]' ? main : null,
-    querySelectorAll: () => [],
+    querySelectorAll: (selector) => selector.startsWith('[role="dialog"]') && start?.modal ? [element('dialog')] : [],
   };
   const timers = new Map();
   const intervals = new Map();
@@ -110,7 +129,8 @@ function coachFixture({ context = {}, prompts = ['What is phishing?'], draft = '
     clearTimeout: (id) => timers.delete(id), setInterval: (callback, ms) => intervals.set(ms, callback), queueMicrotask,
   });
   return {
-    input, sent, requests, storage, sendButton, addPrompt, navigation,
+    input, sent, requests, storage, sendButton, startButton, addPrompt, navigation, openConversation,
+    startClicks: () => startClicks,
     aiRequests: () => requests.filter((message) => message.type === 'AI_DIALOGUE'),
     notice: () => created.map((node) => node.textContent).join('\n'),
     setBusy(value) { busy = value; }, setActionsReady(value) { actionsReady = value; },
@@ -166,6 +186,86 @@ test('Coach sends no request without AI and dialogue opt-in', async () => {
     assert.equal(app.aiRequests().length, 0);
     assert.equal(app.sent.length, 0);
   }
+});
+
+test('Coach starts its known introductory screen once, then waits for a stable first question', async () => {
+  const app = await begin({ start: {} });
+  assert.equal(app.startClicks(), 1);
+  assert.equal(app.aiRequests().length, 0);
+  assert.ok(JSON.parse(app.storage.get(STORE_KEY)).launchAt > 0);
+  await app.advance(2_500);
+  assert.equal(app.aiRequests().length, 1);
+  await finishReply(app, 'First response after automatic start.');
+  assert.deepEqual(app.sent, ['First response after automatic start.']);
+  await app.advance(10_000);
+  assert.equal(app.startClicks(), 1);
+  assert.equal(app.aiRequests().length, 1);
+});
+
+test('Coach start requires AI, dialogue opt-in, ownership and no earlier conversation or completion', async () => {
+  for (const context of [{ autoDialogue: false }, { allowAI: false }, { enabled: false }]) {
+    const app = await begin({ context, start: {} });
+    assert.equal(app.startClicks(), 0);
+    assert.equal(app.aiRequests().length, 0);
+  }
+  for (const previous of [
+    { turns: 1, history: [], sent: [], pending: null },
+    { turns: 0, history: [{ prompt: 'Earlier', reply: 'Answer' }], sent: [], pending: null },
+    { turns: 0, history: [], sent: ['earlier'], pending: null },
+    { turns: 0, history: [], sent: [], pending: { key: 'earlier', status: 'sent', at: 99_000 } },
+  ]) {
+    const app = await begin({ start: {}, storage: new Map([[STORE_KEY, JSON.stringify(previous)]]) });
+    assert.equal(app.startClicks(), 0);
+    assert.equal(app.aiRequests().length, 0);
+  }
+  const completed = await begin({ start: {}, completion: {} });
+  assert.equal(completed.startClicks(), 0);
+  assert.equal(completed.navigation.retry, 0);
+  assert.equal(completed.navigation.next, 1);
+});
+
+test('Coach does not launch hidden, ambiguous, historical or unknown controls, forms, dialogs or attestations', async () => {
+  for (const start of [{ hidden: true }, { duplicate: true }, { label: 'Try again' }, { type: 'submit' },
+    { inHistory: true }, { inForm: true }, { modal: true }, { attestation: true }]) {
+    const app = await begin({ start });
+    assert.equal(app.startClicks(), 0, JSON.stringify(start));
+    assert.equal(app.aiRequests().length, 0);
+  }
+});
+
+test('Coach waits for an enabled Start Dialogue and bounds a disabled start', async () => {
+  const waiting = await begin({ start: { disabled: true } });
+  assert.equal(waiting.startClicks(), 0);
+  waiting.startButton.disabled = false;
+  await waiting.advance(1_000);
+  assert.equal(waiting.startClicks(), 1);
+  const disabled = await begin({ start: { disabled: true } });
+  await disabled.advance(120_001);
+  assert.equal(disabled.startClicks(), 0);
+  assert.match(disabled.notice(), /Start Dialogue.*доступн/u);
+});
+
+test('an inert Coach start survives reload without a second launch and times out without AI', async () => {
+  const first = await begin({ start: { inert: true } });
+  assert.equal(first.startClicks(), 1);
+  const restored = await begin({ start: { inert: true }, storage: first.storage });
+  assert.equal(restored.startClicks(), 0);
+  await restored.advance(120_001);
+  assert.equal(restored.startClicks(), 0);
+  assert.equal(restored.aiRequests().length, 0);
+  assert.match(restored.notice(), /не запустил диалог/u);
+});
+
+test('Coach start stops before clicking when its launch record is corrupt or cannot be persisted', async () => {
+  const corrupt = await begin({ start: {}, storage: new Map([[STORE_KEY,
+    JSON.stringify({ history: [], sent: [], turns: 0, pending: null, launchAt: 'invalid' })]]) });
+  assert.equal(corrupt.startClicks(), 0);
+  assert.match(corrupt.notice(), /поврежден/u);
+  class BrokenStorage extends Map { set() { throw new Error('Storage unavailable'); } }
+  const unavailable = await begin({ start: {}, storage: new BrokenStorage() });
+  assert.equal(unavailable.startClicks(), 0);
+  assert.equal(unavailable.aiRequests().length, 0);
+  assert.match(unavailable.notice(), /сохранить.*запуска/u);
 });
 
 test('Coach recognizes the live ended-message and Completed badge and advances once without AI or Try again', async () => {

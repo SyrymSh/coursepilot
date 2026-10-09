@@ -4,7 +4,7 @@ export function defaultState() {
   return {
     version: 1,
     settings: {
-      timeZone: 'Asia/Qyzylorda', windowStart: '09:00', windowEnd: '21:00', maxParallel: 4,
+      timeZone: 'Asia/Qyzylorda', windowStart: '09:00', windowEnd: '21:00', maxParallel: 4, skipManual: true,
       applicationStart: '2026-11-02', applicationEnd: '2026-11-09',
       ai: { enabled: false, endpoint: '', model: '', dailyRequests: 40, maxOutputTokens: 800, autoSubmit: false, autoHonorCode: false, autoDialogue: false, dialogueMaxTurns: 12 },
     },
@@ -22,6 +22,7 @@ export function validateSettings(settings) {
     return fail('Окно работы должно заканчиваться позже начала в тот же день.');
   }
   if (!Number.isInteger(settings.maxParallel) || settings.maxParallel < 1 || settings.maxParallel > 4) return fail('Параллельность: от 1 до 4 предметов.');
+  if (settings.skipManual != null && typeof settings.skipManual !== 'boolean') return fail('Пропуск ручных материалов должен быть включён или выключен.');
   const date = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
   if ((settings.applicationStart && !date(settings.applicationStart)) || (settings.applicationEnd && !date(settings.applicationEnd))) return fail('Некорректная дата подачи заявления.');
   if (settings.applicationStart && settings.applicationEnd && settings.applicationStart > settings.applicationEnd) return fail('Конец подачи должен быть не раньше начала.');

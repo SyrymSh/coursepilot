@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CoursePilot — local navigation regression</title>
+  <style>
+    body{font:16px/1.5 system-ui;max-width:1050px;margin:24px auto;padding:0 20px 100px;color:#172338;background:#fafbf9}
+    h1{font-size:26px}h2{font-size:20px}button,a{font:inherit}button{padding:9px 16px;cursor:pointer;border:1px solid #86998b;border-radius:7px;background:#fff}
+    button:disabled{cursor:default;opacity:.5}button:focus-visible,a:focus-visible{outline:3px solid #2268cb;outline-offset:3px}
+    main{padding:22px;border:1px solid #cbd7ce;border-radius:10px;background:#fff}.layout{display:grid;grid-template-columns:270px 1fr;gap:20px}
+    nav{padding:14px;background:#eef3f8;border-radius:8px}nav section+section{border-top:1px solid #cbd7ce;margin-top:16px}nav a{display:block;padding:6px 0}
+    .scenario-links{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0}.scenario-links a{display:inline}
+    .pass{padding:16px;background:#e5f4e8;border-radius:8px}.footer-next{margin-top:24px;display:flex;justify-content:flex-end}
+    pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eef2ed;padding:16px;font-size:13px}[hidden]{display:none!important}
+    #timed-modal{position:fixed;z-index:10;top:25%;left:calc(50% - 290px);width:530px;padding:28px;border:1px solid #ccd5cc;border-radius:16px;background:#fff;box-shadow:0 0 0 999px #17233860}
+    #timed-modal .buttons{display:flex;gap:14px;margin-top:22px}#attempt-continue{background:#2355cb;color:white;border-color:#2355cb}
+    #result-line{padding:14px;background:#e8eef9;border-radius:8px;font-weight:600}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CoursePilot — local navigation regression</h1>
+    <p>Isolated mock: no account, network API, grades, certificates, or real attempts. The extension content script is served unchanged.</p>
+    <div class="scenario-links">
+      <a href="/learn/navigation-fixture/assignment-submission/passed/cover?scenario=chain">Three-step chain</a>
+      <a href="/learn/navigation-fixture/assignment-submission/passed/cover?scenario=passed">Passed cover only</a>
+      <a href="/learn/navigation-fixture/assignment-submission/unsupported/cover?scenario=unsupported">Unsupported / next module</a>
+      <a href="/learn/navigation-fixture/assignment-submission/timed/cover?scenario=timed">Timed dialog / cancel and skip</a>
+    </div>
+    <p id="scenario-description"></p>
+    <p id="result-line" role="status">Starting…</p>
+    <button id="resume-fixture" type="button">Resume mock subject</button>
+  </header>
+  <div class="layout">
+    <nav id="outline" aria-label="Course outline"></nav>
+    <main id="fixture-main">
+      <article>
+        <p id="assignment-type">Practice Assignment</p>
+        <h1 id="fixture-title">Test your knowledge: The history of cybersecurity</h1>
+        <section id="passed-cover">
+          <button id="next-top" type="button">Go to next item</button>
+          <button id="try-again" type="button">Try again</button>
+          <div class="pass" role="status">
+            <p>You passed!</p>
+            <p>To pass you need a grade of at least 75%.</p>
+            <p><strong>100%</strong></p>
+            <p>Submitted Oct 10, 3:17 AM +06</p>
+            <button id="view-feedback" type="button">View feedback</button>
+          </div>
+        </section>
+        <section id="unsupported-cover" hidden>
+          <p>The mock assignment uses an unknown interaction. There are no recognized question inputs and no user draft.</p>
+          <button id="unsupported-next-top" type="button">Go to next item</button>
+        </section>
+        <section id="timed-cover" hidden>
+          <p>3 attempts · every 8 hours · 60 min per attempt</p>
+          <button id="start-assignment" type="button">Start assignment</button>
+          <button id="timed-next-top" type="button">Go to next item</button>
+        </section>
+        <section id="terminal" hidden><p>The fixture reached the next module. The mock subject is stopped here to avoid unrelated follow-up actions.</p></section>
+        <div id="footer-next" class="footer-next"><button id="next-bottom" type="button">Go to next item</button></div>
+      </article>
+    </main>
+  </div>
+  <section id="timed-modal" role="dialog" aria-modal="true" aria-labelledby="attempt-title" hidden>
+    <h2 id="attempt-title">Start new attempt?</h2>
+    <p>You have <strong>1 hour</strong> to submit this attempt.</p>
+    <p>You will have <strong>2 attempts</strong> left after the time runs out. After that, you will have to wait <strong>8h</strong> before you can try again.</p>
+    <div class="buttons"><button id="attempt-continue" type="button">Continue</button><button id="attempt-cancel" type="button">Cancel</button></div>
+  </section>
+  <h2>Visible diagnostics</h2>
+  <pre id="diagnostics" aria-live="off">Starting…</pre>
+  <script src="/navigation-harness.js"></script>
+  <script src="/content.js"></script>
+</body>
+</html>

@@ -35,6 +35,8 @@
       <a href="/learn/fixture/assignment-submission/result/view-feedback?scenario=quiz-feedback-fail">Feedback failing grade</a>
       <a href="/learn/fixture/assignment-submission/result/view-feedback?scenario=quiz-feedback-unknown">Feedback missing threshold</a>
       <a href="/learn/fixture/coach/auto/debug?scenario=coach-auto">Coach auto</a>
+      <a href="/learn/fixture/coach/start/debug?scenario=coach-start">Coach auto-start</a>
+      <a href="/learn/fixture/lab/manual/debug?scenario=manual-skip">Manual activity auto-skip</a>
       <a href="/learn/fixture/coach/text/debug?scenario=coach-text">Coach plain-text API</a>
       <a href="/learn/fixture/coach/completed/debug?scenario=coach-completed">Coach completed screen</a>
       <a href="/learn/fixture/coach/ended/debug?scenario=coach-ended">Coach ended without completion</a>
@@ -81,6 +83,7 @@
     <section id="coach-area" data-testid="dialogue-content" hidden>
       <div id="coursera-coach-item" data-testid="coursera-coach-item">
         <div id="coach-messages" data-testid="ai-coach-chat-messages" role="list" aria-busy="false"></div>
+        <section id="coach-intro" hidden><p>When you're ready, click Start Dialogue.</p><button id="coach-start" type="button">Start Dialogue</button></section>
         <div id="coach-composer" role="group" aria-label="Chat message composer">
           <textarea id="coach-input" aria-label="Send a message" maxlength="7999"></textarea>
           <button id="coach-send" type="button" aria-label="Send message" disabled>Send message</button>
@@ -115,7 +118,7 @@
     <button id="close-modal" type="button">Close mock modal</button>
   </section>
   <h2>Fixture diagnostics</h2>
-  <section id="submit-confirmation" role="dialog" aria-modal="true" aria-labelledby="submit-confirmation-title" hidden>
+  <section id="submit-confirmation" role="alertdialog" aria-modal="true" aria-labelledby="submit-confirmation-title" hidden>
     <h2 id="submit-confirmation-title">Ready to submit?</h2>
     <button id="confirm-submit" type="button">Submit</button>
     <button id="cancel-submit" type="button">Cancel</button>

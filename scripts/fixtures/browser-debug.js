@@ -10,9 +10,9 @@
   const data = {
     scenario, pageCycle, connection: 'managed', samples: [], messages: [], requests: 0,
     forbiddenRequests: 0, submissions: 0, confirmations: 0, resumeClicks: 0, honorClicks: 0, blocked: false,
-    dialogueRequests: 0, dialogueSends: 0, coachBusy: false, dialogueTexts: [], nextClicks: 0, dialogueRestarts: 0, quizPendingResult: false,
-    openOnResume: false, holdAI: scenario === 'pending', pendingAI: [], errors: [],
-    context: { subjectId: `fixture-${scenario}`, enabled: true, allowAI: initialQuiz || autoCoach, canRetryAI: initialQuiz || autoCoach, autoSubmit: autoQuiz || autoCoach, autoHonorCode: autoHonor, autoDialogue: autoCoach, dialogueMaxTurns: 12 },
+    dialogueRequests: 0, dialogueSends: 0, dialogueStarts: 0, coachBusy: false, dialogueTexts: [], nextClicks: 0, dialogueRestarts: 0, quizPendingResult: false,
+    openOnResume: false, holdAI: scenario === 'pending', pendingAI: [], errors: [], skippedItems: [],
+    context: { subjectId: `fixture-${scenario}`, enabled: true, skipManual: scenario === 'manual-skip', allowAI: initialQuiz || autoCoach, canRetryAI: initialQuiz || autoCoach, autoSubmit: autoQuiz || autoCoach, autoHonorCode: autoHonor, autoDialogue: autoCoach, dialogueMaxTurns: 12 },
   };
   window.fixtureState = data;
   const questions = '<fieldset><legend>Which item is explicitly named?</legend><label><input type="radio" name="question" value="a">Item A</label><label><input type="radio" name="question" value="b">Item B</label></fieldset>';
@@ -23,11 +23,11 @@
     byId('diagnostics').textContent = JSON.stringify({
       scenario, pageCycle, connection: data.connection, context: data.context,
       ready: { harness: window.fixtureReady === true, runtimeId: window.chrome?.runtime?.id || null, content: window.__COURSEPILOT_CONTENT__ === true, commandListener: typeof window.fixtureCommand === 'function', document: document.readyState },
-      errors: data.errors,
+      errors: data.errors, skippedItems: data.skippedItems,
       requests: data.requests, pendingAI: data.pendingAI.length, holdAI: data.holdAI,
       forbiddenRequests: data.forbiddenRequests, submissions: data.submissions, confirmations: data.confirmations, honorClicks: data.honorClicks,
       quizPendingResult: data.quizPendingResult, dialogueRequests: data.dialogueRequests,
-      dialogueSends: data.dialogueSends, coachBusy: data.coachBusy, dialogueTexts: data.dialogueTexts,
+      dialogueSends: data.dialogueSends, dialogueStarts: data.dialogueStarts, coachBusy: data.coachBusy, dialogueTexts: data.dialogueTexts,
       nextClicks: data.nextClicks, dialogueRestarts: data.dialogueRestarts, currentPath: location.pathname,
       blocked: data.blocked, reason: data.reason || '', resumeClicks: data.resumeClicks,
       openOnResume: data.openOnResume, selected: document.querySelectorAll('input:checked').length,
@@ -36,7 +36,7 @@
       lastMessages: data.messages.slice(-6),
     }, null, 2);
     byId('connection-label').textContent = `Mock connection: ${data.connection}`;
-    byId('automation-summary').textContent = `Mock result: ${data.dialogueSends} dialogue replies · ${data.submissions} quiz submissions · ${data.confirmations} final confirmations · ${data.nextClicks} next-item transitions · ${data.errors.length} errors${autoHonor ? ` · ${data.honorClicks} Honor Code clicks` : ''}`;
+    byId('automation-summary').textContent = `Mock result: ${data.dialogueSends} dialogue replies · ${data.submissions} quiz submissions · ${data.confirmations} final confirmations · ${data.nextClicks} next-item transitions · ${data.errors.length} errors${scenario === 'manual-skip' ? ` · ${data.skippedItems.length} unfinished items saved` : ''}${scenario === 'coach-start' ? ` · ${data.dialogueStarts} dialogue starts` : ''}${autoHonor ? ` · ${data.honorClicks} Honor Code clicks` : ''}`;
     byId('hold-ai').textContent = data.holdAI ? 'Stop holding future AI replies' : 'Hold future AI replies';
     byId('release-ai').disabled = data.pendingAI.length === 0;
   }
@@ -102,6 +102,12 @@
         data.blocked = false;
         data.context.enabled = true;
         data.reason = '';
+      }
+      if (message.type === 'CONTENT_SKIP_MANUAL') {
+        if (data.connection !== 'managed' || !data.context.enabled || !data.context.skipManual) {
+          callback({ ok: false, error: 'Fixture: skip permission lost.' }); render(); return;
+        }
+        if (!data.skippedItems.some((item) => item.url === message.url)) data.skippedItems.push({ url: message.url, title: message.itemTitle, reason: message.reason });
       }
       if (message.type === 'AI_QUIZ' || message.type === 'AI_DIALOGUE') {
         data.requests += 1;
@@ -217,7 +223,7 @@
       input.disabled = false;
       byId('coach-messages').setAttribute('aria-busy', 'false');
       if (data.dialogueSends >= 2) {
-        if (scenario === 'coach-text') showCoachEnded();
+        if (scenario === 'coach-text' || scenario === 'coach-start') showCoachEnded();
         else {
           byId('coach-complete').hidden = false;
           byId('coach-composer').hidden = true;
@@ -232,13 +238,14 @@
   function openNextMaterial(event) {
     event.preventDefault();
     data.nextClicks += 1;
-    history.pushState({}, '', `/learn/fixture/supplement/next/debug?scenario=${encodeURIComponent(scenario)}`);
-    byId('fixture-title').textContent = 'Fixture next reading';
+    const target = scenario === 'manual-skip' ? ['coach', 'quiz', 'supplement', 'lecture'][data.nextClicks - 1] : 'supplement';
+    history.pushState({}, '', `/learn/fixture/${target}/next-${data.nextClicks}/debug?scenario=${encodeURIComponent(scenario)}`);
+    byId('fixture-title').textContent = scenario === 'manual-skip' ? `Fixture next ${target}` : 'Fixture next reading';
     byId('quiz-form').hidden = true;
     byId('quiz-result').hidden = true;
     byId('coach-area').hidden = true;
     byId('assignment-modal').hidden = true;
-    byId('next-material').hidden = true;
+    byId('next-material').hidden = scenario !== 'manual-skip' || data.nextClicks >= 4;
     byId('reading-copy').hidden = false;
     render();
   }
@@ -275,6 +282,17 @@
     render();
   });
   byId('coach-input').addEventListener('input', syncCoachComposer);
+  byId('coach-start').addEventListener('click', () => {
+    data.dialogueStarts += 1;
+    byId('coach-intro').hidden = true;
+    setTimeout(() => {
+      byId('coach-messages').replaceChildren();
+      appendCoachMessage('An email claims your account will be closed unless you share your password. What warning signs would you look for?');
+      byId('coach-composer').hidden = false;
+      render();
+    }, 500);
+    render();
+  });
   byId('coach-send').addEventListener('click', sendCoachMessage);
   byId('coach-try-again').addEventListener('click', () => { data.dialogueRestarts += 1; render(); });
   byId('next-local-button').addEventListener('click', openNextMaterial);
@@ -325,6 +343,8 @@
     'quiz-feedback-fail': 'Feedback grade 50% below the 75% threshold, even though a previous highest grade is 100%. Expected: no continuation or AI request.',
     'quiz-feedback-unknown': 'Feedback banner has no passing threshold. Expected: a result-specific notice, no AI, no new attempt, no continuation.',
     'coach-auto': 'Recognized Coach conversation with two mocked replies. Expected: two sends followed by completion and local continuation.',
+    'coach-start': 'Observed Start Dialogue screen. Expected: one automatic start, two mocked replies and one continuation, without Try again or duplicate starts.',
+    'manual-skip': 'Four manual materials (lab, Coach with AI off, quiz with automation off, reading) are saved as unfinished and skipped. Expected: four transitions to a video, zero API calls, submissions or completion marks.',
     'coach-text': 'Real provider adapter with mocked plain-text responses, quotes and line breaks; no JSON envelope, credentials or network requests. Expected: two sends and one continuation.',
     'coach-completed': 'Observed Coursera ended-message and Completed badge, with no composer. Expected: one continuation, zero AI calls, zero Try again clicks.',
     'coach-ended': 'Dialogue ended without a Completed badge. The visible next button must not cause continuation or a restart.',
@@ -354,11 +374,16 @@
     byId('quiz-form').hidden = true;
     byId('reading-copy').hidden = true;
     byId('coach-area').hidden = false;
-    appendCoachMessage('An email claims your account will be closed unless you share your password. What warning signs would you look for?');
+    if (scenario === 'coach-start') {
+      byId('coach-composer').hidden = true;
+      byId('coach-intro').hidden = false;
+      appendCoachMessage('Welcome! During this Dialogue, we will focus on recognizing suspicious messages.');
+    } else appendCoachMessage('An email claims your account will be closed unless you share your password. What warning signs would you look for?');
     if (scenario === 'coach-draft') setCoachDraft('My unfinished draft — keep this text unchanged.');
     if (scenario === 'coach-offline') data.connection = 'disconnected';
     if (scenario === 'coach-completed' || scenario === 'coach-ended') showCoachEnded(scenario === 'coach-completed');
   }
+  if (scenario === 'manual-skip') { byId('quiz-form').hidden = true; byId('fixture-title').textContent = 'Fixture manual lab'; showNext(); }
   window.fixtureReady = true;
   render();
   setInterval(render, 250);

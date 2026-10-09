@@ -7,7 +7,7 @@ const PRESETS = [
 ];
 const STATUS = { idle: "Не начат", running: "В работе", paused: "На паузе", blocked: "Нужно действие", completed: "Завершён" };
 const COURSE_STATUS = { pending: "В очереди", idle: "В очереди", running: "В работе", active: "В работе", paused: "На паузе", blocked: "Нужно действие", completed: "Завершён" };
-const defaultSettings = { timeZone: "Asia/Qyzylorda", windowStart: "09:00", windowEnd: "21:00", maxParallel: 4, applicationStart: "2026-11-02", applicationEnd: "2026-11-09", ai: { enabled: false, endpoint: "", model: "", dailyRequests: 40, maxOutputTokens: 800, autoSubmit: false, autoHonorCode: false, autoDialogue: false, dialogueMaxTurns: 12 } };
+const defaultSettings = { timeZone: "Asia/Qyzylorda", windowStart: "09:00", windowEnd: "21:00", maxParallel: 4, skipManual: true, applicationStart: "2026-11-02", applicationEnd: "2026-11-09", ai: { enabled: false, endpoint: "", model: "", dailyRequests: 40, maxOutputTokens: 800, autoSubmit: false, autoHonorCode: false, autoDialogue: false, dialogueMaxTurns: 12 } };
 let state = { settings: defaultSettings, subjects: [], logs: [], metrics: {}, aiUsage: {}, hasApiKey: false };
 let toastTimer;
 let refreshTimer;
@@ -166,7 +166,25 @@ function renderSubject(subject, index) {
   actions.append(actionButton("Открыть ↗", "open", subject.id));
   inner.append(actions);
   card.append(inner, renderCourses(subject, courses));
+  if (subject.skippedItems?.length) card.append(renderSkippedItems(subject.skippedItems));
   return card;
+}
+
+function renderSkippedItems(items) {
+  const details = element("details", "subject-details");
+  details.append(element("summary", "", `Пропущенные материалы · ${items.length}`));
+  const list = element("ol", "courses-list");
+  for (const item of items) {
+    const url = safeCourseUrl(item.url);
+    const row = element("li", "course-item");
+    const body = element("div");
+    const name = element(url ? "a" : "span", "course-name", item.title);
+    if (url) { name.href = url; name.target = "_blank"; name.rel = "noopener noreferrer"; }
+    body.append(name, element("div", "course-meta", item.reason));
+    row.append(body); list.append(row);
+  }
+  details.append(list);
+  return details;
 }
 
 function readinessPill(label, ready) {
@@ -290,6 +308,7 @@ function openSettings() {
   $("window-end").value = settings.windowEnd;
   $("timezone").value = settings.timeZone;
   $("max-parallel").value = settings.maxParallel;
+  $("skip-manual").checked = settings.skipManual === true;
   $("application-start").value = settings.applicationStart || "";
   $("application-end").value = settings.applicationEnd || "";
   $("ai-enabled").checked = settings.ai.enabled;
@@ -375,7 +394,7 @@ $("settings-form").addEventListener("submit", async (event) => {
       }
     } catch (error) { formError("settings-error", error.message || "Проверь адрес API."); return; }
   }
-  const settings = { ...state.settings, timeZone, windowStart: $("window-start").value, windowEnd: $("window-end").value, maxParallel: Number($("max-parallel").value), applicationStart, applicationEnd, ai: { ...state.settings.ai, enabled, endpoint, model: $("ai-model").value.trim(), dailyRequests: Number($("ai-requests").value), maxOutputTokens: Number($("ai-tokens").value), autoSubmit: $("ai-auto-submit").checked, autoHonorCode: $("ai-auto-honor-code").checked, autoDialogue: $("ai-auto-dialogue").checked, dialogueMaxTurns } };
+  const settings = { ...state.settings, timeZone, windowStart: $("window-start").value, windowEnd: $("window-end").value, maxParallel: Number($("max-parallel").value), skipManual: $("skip-manual").checked, applicationStart, applicationEnd, ai: { ...state.settings.ai, enabled, endpoint, model: $("ai-model").value.trim(), dailyRequests: Number($("ai-requests").value), maxOutputTokens: Number($("ai-tokens").value), autoSubmit: $("ai-auto-submit").checked, autoHonorCode: $("ai-auto-honor-code").checked, autoDialogue: $("ai-auto-dialogue").checked, dialogueMaxTurns } };
   const message = { type: "UPDATE_SETTINGS", settings };
   if ($("clear-key").checked) message.apiKey = "";
   else if ($("ai-key").value.trim()) message.apiKey = $("ai-key").value.trim();
